@@ -3,6 +3,7 @@ import base64
 import binascii
 import hashlib
 import math
+import os
 import re
 import secrets
 import threading
@@ -16,9 +17,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
+import psycopg
+
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_FILE = APP_DIR / "click_beleza_data.json"
+DATABASE_URL = os.environ.get("CLICK_BELEZA_DATABASE_URL")
 HOST = "127.0.0.1"
 PORT = 8765
 PILOT_REGION = "Marília, SP"
@@ -240,22 +244,82 @@ SAMPLE_PROFESSIONALS = [
 ]
 
 
+def _validate_data(data):
+    if not isinstance(data, dict) or not isinstance(data.get("professionals"), list) or not isinstance(data.get("bookings"), list):
+        raise RuntimeError("Os dados do Click Beleza têm formato inválido.")
+    return data
+
+
+def _load_file_data():
+    if not DATA_FILE.exists():
+        return {"professionals": deepcopy(SAMPLE_PROFESSIONALS), "bookings": []}
+    try:
+        with DATA_FILE.open("r", encoding="utf-8") as data_file:
+            return _validate_data(json.load(data_file))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Não foi possível ler {DATA_FILE.name}: {error}") from error
+
+
+def _ensure_database_state(cursor):
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS click_beleza_state (
+            id SMALLINT PRIMARY KEY CHECK (id = 1),
+            payload JSONB NOT NULL
+        )
+        """
+    )
+    cursor.execute("SELECT payload FROM click_beleza_state WHERE id = 1")
+    row = cursor.fetchone()
+    if row is None:
+        initial_data = _load_file_data()
+        cursor.execute(
+            """
+            INSERT INTO click_beleza_state (id, payload)
+            VALUES (1, %s::jsonb)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (json.dumps(initial_data, ensure_ascii=False),),
+        )
+
+
 def load_data():
     with DATA_LOCK:
-        if not DATA_FILE.exists():
-            return {"professionals": deepcopy(SAMPLE_PROFESSIONALS), "bookings": []}
+        if not DATABASE_URL:
+            return _load_file_data()
         try:
-            with DATA_FILE.open("r", encoding="utf-8") as data_file:
-                data = json.load(data_file)
-        except (OSError, json.JSONDecodeError) as error:
-            raise RuntimeError(f"Não foi possível ler {DATA_FILE.name}: {error}") from error
-        if not isinstance(data, dict) or not isinstance(data.get("professionals"), list) or not isinstance(data.get("bookings"), list):
-            raise RuntimeError("O arquivo de dados do Click Beleza tem formato inválido.")
-        return data
+            with psycopg.connect(DATABASE_URL, connect_timeout=5) as connection:
+                with connection.cursor() as cursor:
+                    _ensure_database_state(cursor)
+                    cursor.execute("SELECT payload FROM click_beleza_state WHERE id = 1")
+                    return _validate_data(cursor.fetchone()[0])
+        except psycopg.Error as error:
+            raise RuntimeError(
+                "Não foi possível conectar ao PostgreSQL do Click Beleza. "
+                "Verifique o serviço, a URL e a senha local do banco."
+            ) from error
 
 
 def save_data(data):
     with DATA_LOCK:
+        _validate_data(data)
+        if DATABASE_URL:
+            try:
+                with psycopg.connect(DATABASE_URL, connect_timeout=5) as connection:
+                    with connection.cursor() as cursor:
+                        _ensure_database_state(cursor)
+                        cursor.execute(
+                            """
+                            UPDATE click_beleza_state SET payload = %s::jsonb WHERE id = 1
+                            """,
+                            (json.dumps(data, ensure_ascii=False),),
+                        )
+                return
+            except psycopg.Error as error:
+                raise RuntimeError(
+                    "Não foi possível salvar os dados no PostgreSQL do Click Beleza. "
+                    "Verifique o serviço e as permissões do banco."
+                ) from error
         temporary_file = DATA_FILE.with_suffix(".tmp")
         try:
             with temporary_file.open("w", encoding="utf-8") as output:

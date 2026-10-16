@@ -15,15 +15,29 @@ As quatro imagens de inspiração são materiais ilustrativos do Unsplash,
 armazenados localmente em `assets/` para o carrossel funcionar sem carregar
 fotos de terceiros a cada visita.
 
-Para executar localmente, abra um terminal nesta pasta e rode:
+Para executar localmente com PostgreSQL, instale as dependências nesta pasta e
+configure a senha local no arquivo `%APPDATA%\postgresql\pgpass.conf` (formato
+`host:porta:banco:usuário:senha`). Depois rode:
 
 ```powershell
+python -m pip install -r requirements.txt
 python consulta_cep.py
 ```
 
-Depois, acesse `http://127.0.0.1:8765`. Os dados criados ficam em
-`click_beleza_data.json`; os perfis iniciais são exemplos demonstrativos em
-Marília e São Paulo e não representam profissionais reais. O protótipo não tem
+No VS Code, a tarefa e a configuração de depuração selecionam o banco
+`click_beleza` no PostgreSQL local. A primeira conexão cria a tabela
+`click_beleza_state` e migra automaticamente os dados de
+`click_beleza_data.json` se o banco ainda estiver vazio. As próximas alterações
+são salvas no PostgreSQL. A senha não fica no código: o usuário da aplicação e
+o banco estão na URL sem senha, e o cliente PostgreSQL lê a senha do arquivo
+local `pgpass.conf`. Para iniciar manualmente fora do VS Code, defina
+`CLICK_BELEZA_DATABASE_URL` como
+`postgresql://click_beleza_app@127.0.0.1:5432/click_beleza`.
+
+Sem `CLICK_BELEZA_DATABASE_URL`, o backend mantém o armazenamento JSON para
+testes e execução independente. Acesse `http://127.0.0.1:8765`. Os perfis
+iniciais são exemplos demonstrativos em Marília e São Paulo e não representam
+profissionais reais. O protótipo não tem
 autenticação nem proteção de dados suficiente para uso público. Não há
 processamento de pagamentos. Após enviar um pedido, o cliente pode avançar por
 uma etapa demonstrativa de Pix ou cartão; nenhuma cobrança, transferência,
