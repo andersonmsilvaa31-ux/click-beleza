@@ -37,7 +37,9 @@ class ApiIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.original_data_file = backend.DATA_FILE
+        self.original_database_url = backend.DATABASE_URL
         backend.DATA_FILE = Path(self.temporary_directory.name) / "data.json"
+        backend.DATABASE_URL = None
         backend.clear_caches()
         professional = copy.deepcopy(backend.SAMPLE_PROFESSIONALS[0])
         professional.update({
@@ -58,6 +60,7 @@ class ApiIntegrationTests(unittest.TestCase):
         self.server.server_close()
         self.server_thread.join(timeout=2)
         backend.DATA_FILE = self.original_data_file
+        backend.DATABASE_URL = self.original_database_url
         self.temporary_directory.cleanup()
 
     def get_json(self, path):
