@@ -13,6 +13,11 @@
         "kind": "build",
         "isDefault": true
       },
+      "options": {
+        "env": {
+          "CLICK_BELEZA_DATABASE_URL": "postgresql://click_beleza_app@127.0.0.1:5432/click_beleza"
+        }
+      },
       "isBackground": true,
       "problemMatcher": {
         "base": "$python",
