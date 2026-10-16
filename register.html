@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Cadastre seu trabalho | Click Beleza</title><link rel="stylesheet" href="style.css"><script src="api.js" defer></script><script src="app.js" defer></script></head>
+<body>
+  <header class="site-header"><a class="brand" href="/">click<span>beleza</span><i>.</i></a><nav><a href="/services.html">Serviços</a><a href="/professionals.html">Encontrar profissionais</a><a href="/agenda.html">Pedidos e mensagens</a></nav></header>
+  <main class="form-shell"><p class="eyebrow">VAMOS CRESCER JUNTOS</p><h1>Mostre seu talento.</h1><p>Comece com o básico para publicar seu perfil. Depois, complete os detalhes no seu ritmo para transmitir mais confiança aos clientes.</p>
+    <form class="form-card" id="register-form">
+      <div class="form-grid">
+        <h2 class="full">Comece por aqui</h2>
+        <p class="form-note full">Informe seu nome, categoria e cidade. Seu perfil já aparecerá na busca; complete o restante depois.</p>
+        <label>Nome profissional ou do espaço<input name="name" required maxlength="100" placeholder="Ex.: Studio Ana Lima"></label>
+        <label>Categoria principal<select name="service" required><option value="">Selecione</option><option value="cabeleireiro">Cabelo</option><option value="barbeiro">Barbearia</option><option value="manicure">Manicure</option><option value="pedicure">Pedicure</option><option value="sobrancelhas">Sobrancelhas</option><option value="cilios">Cílios</option><option value="maquiagem">Maquiagem</option><option value="estetica">Estética</option><option value="massagem">Massagem</option><option value="depilacao">Depilação</option><option value="tatuagem_piercing">Tatuagem e piercing</option></select></label>
+        <label>Cidade<input name="city" required maxlength="100" autocomplete="address-level2" placeholder="Ex.: Marília"></label>
+        <details class="profile-extra full">
+          <summary>Adicionar mais detalhes (opcional)</summary>
+          <p class="form-note">Adicione uma descrição, serviços e fotos para ajudar clientes a conhecer seu trabalho.</p>
+          <div class="form-grid profile-extra-grid">
+            <label>E-mail de contato<input name="email" type="email" maxlength="200" autocomplete="email" placeholder="voce@email.com"></label>
+            <label>Telefone / WhatsApp<input name="phone" type="tel" maxlength="30" autocomplete="tel" placeholder="(14) 99999-9999"></label>
+            <label class="full">Sobre seu trabalho<textarea name="description" maxlength="800" placeholder="Conte um pouco sobre sua experiência e seu atendimento."></textarea></label>
+            <h2 class="full">Serviço e preço</h2>
+            <p class="form-note full">Cadastre pelo menos um serviço para que clientes possam solicitar um horário.</p>
+            <label>Nome do serviço<input name="serviceName" maxlength="100" placeholder="Ex.: Corte e finalização"></label>
+            <label>Preço (R$)<input name="price" type="number" min="1" max="100000" step="0.01" placeholder="Ex.: 50"></label>
+            <label>Duração (minutos)<input name="duration" type="number" min="15" max="600" step="15" value="60"></label>
+            <h2 class="full">Endereço</h2>
+            <label class="full">Rua e número<input name="address" maxlength="200" autocomplete="street-address" placeholder="Ex.: Rua das Flores, 123"></label>
+            <label>Bairro<input name="neighborhood" maxlength="100"></label>
+            <label>Fotos e vídeos<input id="portfolio-files" name="portfolioFiles" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" multiple><span id="portfolio-count" class="form-note">Nenhum arquivo selecionado</span></label>
+            <p class="form-note full">Até 8 arquivos. Fotos JPG, PNG ou WebP (até 4 MB cada); vídeos MP4 ou WebM (até 10 MB cada).</p>
+            <div id="portfolio-preview" class="portfolio-preview full" aria-live="polite"></div>
+            <label>Latitude <span class="form-note">(opcional)</span><input name="lat" type="number" min="-90" max="90" step="any" placeholder="-23.5505"></label>
+            <label>Longitude <span class="form-note">(opcional)</span><input name="lon" type="number" min="-180" max="180" step="any" placeholder="-46.6333"></label>
+            <button class="button button-outline full" id="register-location" type="button">◎ Preencher coordenadas com minha localização</button>
+          </div>
+        </details>
+        <button class="button button-primary full" type="submit">Criar meu perfil <span aria-hidden="true">→</span></button>
+      </div>
+      <p id="form-feedback" class="form-feedback" aria-live="polite"></p>
+      <p class="form-note">Demonstração local: ainda não há login. Não informe dados sensíveis.</p>
+    </form>
+  </main>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand" id="sobre">
+        <a class="brand" href="/">click<span>beleza</span><i>.</i></a>
+        <p class="footer-text">Encontre profissionais de beleza, compare preços e solicite seu horário.</p>
+      </div>
+      <nav class="footer-col" aria-label="Para clientes"><p class="footer-title">Para clientes</p><a href="/services.html">Todos os serviços</a><a href="/professionals.html">Encontrar profissionais</a></nav>
+      <nav class="footer-col footer-col-professionals" aria-label="Para profissionais"><p class="footer-title">Para profissionais</p><a href="/register.html">Criar meu perfil</a><a href="/agenda.html">Pedidos e mensagens</a></nav>
+      <nav class="footer-col" aria-label="Para marcas"><p class="footer-title">Para marcas</p><a href="/#parceiras">Ver lojas parceiras</a><a href="/anunciar.html">Divulgar minha marca</a></nav>
+      <nav class="footer-col" aria-label="Atendimento"><p class="footer-title">Atendimento</p><a href="/#sobre">Quem somos</a><a href="/#beauty-chat">SAC</a><a href="/#beauty-chat">Contato</a><a href="https://www.instagram.com/sou_clickbeleza/" target="_blank" rel="noopener noreferrer">@sou_clickbeleza</a></nav>
+    </div>
+    <div class="footer-bottom"><span>© 2026 Click Beleza · Marília, SP</span><span>Mapas © OpenStreetMap contributors</span></div>
+  </footer>
+</body>
+</html>

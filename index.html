@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#050805">
+  <title>Click Beleza — profissionais de beleza perto de você</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Click Beleza - início">click<span>beleza</span><i>.</i></a>
+    <nav><a href="/services.html">Serviços</a><a href="/professionals.html">Encontrar profissionais</a><a class="nav-professional" href="/register.html">Sou profissional <span aria-hidden="true">→</span></a></nav>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">PLATAFORMA DE BELEZA</p>
+        <h1>Beleza boa é<br><span>beleza por perto.</span></h1>
+        <p class="hero-description">Encontre profissionais, compare preços e solicite um horário.</p>
+        <form class="search-panel" action="/professionals.html">
+          <label>O que você procura?
+            <select name="servico" aria-label="Escolha um serviço">
+              <option value="">✨ Todos os serviços</option>
+              <option value="cabeleireiro">💇 Cabelo</option><option value="barbeiro">✂️ Barbeiro / barbearia</option>
+              <option value="manicure">💅 Manicure</option><option value="pedicure">🦶 Pedicure</option>
+              <option value="sobrancelhas">🤨 Sobrancelhas</option><option value="cilios">👁️ Cílios</option>
+              <option value="maquiagem">💄 Maquiagem</option><option value="estetica">🧖 Estética</option>
+              <option value="massagem">💆 Massagem</option><option value="depilacao">🌸 Depilação</option>
+              <option value="tatuagem_piercing">🎨 Tatuagem e piercing</option>
+            </select>
+          </label>
+          <label>Sua cidade ou CEP
+            <input name="local" placeholder="Ex.: Marília ou 17500-000" value="Marília, SP" autocomplete="postal-code">
+          </label>
+          <button class="button button-primary" type="submit">Buscar profissionais <span aria-hidden="true">→</span></button>
+        </form>
+        <button class="text-button" id="use-location" type="button">◎ Usar minha localização</button>
+        <p class="location-feedback" id="location-feedback" aria-live="polite"></p>
+      </div>
+      <div class="hero-art">
+        <div class="flow-card">
+          <p class="flow-badge">RÁPIDO E SIMPLES</p>
+          <h2>Como funciona</h2>
+          <ol class="flow-steps">
+            <li><b>1</b><span><strong>Encontre</strong><small>Escolha o serviço e a cidade.</small></span></li>
+            <li><b>2</b><span><strong>Compare</strong><small>Veja preços e informações disponíveis.</small></span></li>
+            <li><b>3</b><span><strong>Solicite</strong><small>Peça um horário e aguarde a confirmação.</small></span></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+    <section class="section categories-section">
+      <div class="section-heading"><div><p class="eyebrow">ESCOLHA POR CATEGORIA</p><h2>O que você quer fazer hoje?</h2></div><a class="inline-link" href="/services.html">Ver todos os serviços →</a></div>
+      <div class="category-grid">
+        <a class="category-card" href="/professionals.html?servico=cabeleireiro"><span>💇</span><b>Cabelo</b></a>
+        <a class="category-card" href="/professionals.html?servico=barbeiro"><span>✂️</span><b>Barbeiro</b></a>
+        <a class="category-card" href="/professionals.html?servico=manicure"><span>💅</span><b>Unhas</b></a>
+        <a class="category-card" href="/professionals.html?servico=pedicure"><span>🦶</span><b>Pedicure</b></a>
+        <a class="category-card" href="/professionals.html?servico=sobrancelhas"><span>🤨</span><b>Sobrancelhas</b></a>
+        <a class="category-card" href="/professionals.html?servico=cilios"><span>👁️</span><b>Cílios</b></a>
+        <a class="category-card" href="/professionals.html?servico=maquiagem"><span>💄</span><b>Maquiagem</b></a>
+        <a class="category-card" href="/professionals.html?servico=estetica"><span>🧖</span><b>Estética</b></a>
+        <a class="category-card" href="/professionals.html?servico=massagem"><span>💆</span><b>Massagem</b></a>
+        <a class="category-card" href="/professionals.html?servico=depilacao"><span>🌸</span><b>Depilação</b></a>
+        <a class="category-card" href="/professionals.html?servico=tatuagem_piercing"><span>🎨</span><b>Tatuagem e piercing</b></a>
+      </div>
+    </section>
+    <section class="section partners-section" id="parceiras">
+      <div class="section-heading"><div><p class="eyebrow">LOJAS PARCEIRAS</p><h2>Marcas que cuidam de você.</h2></div><a class="inline-link" href="/anunciar.html">Anuncie sua marca →</a></div>
+      <div class="partner-grid" id="partner-grid" aria-live="polite"><p class="loading">Carregando parceiras…</p></div>
+      <p class="carousel-note">Exemplos demonstrativos; ainda não representam lojas parceiras reais.</p>
+    </section>
+    <section class="showcase-section" aria-label="Dicas rápidas antes de agendar">
+      <div class="showcase-heading">
+        <div><p class="eyebrow">DICAS RÁPIDAS</p><h2>Uma dica por serviço.</h2></div>
+        <div class="carousel-controls"><button type="button" id="carousel-prev" aria-label="Dica anterior">←</button><span id="carousel-position" aria-live="polite">01 / 04</span><button type="button" id="carousel-next" aria-label="Próxima dica">→</button></div>
+      </div>
+      <div class="photo-carousel" id="photo-carousel" aria-roledescription="carrossel">
+        <article class="inspiration-slide active"><img src="/assets/inspiracao-unhas.jpg" alt="Unhas com esmaltação artística"><div class="slide-caption"><span>01 · UNHAS</span><h3>Escolha o estilo<br>que combina com você.</h3><p>Separe referências e confira as técnicas no perfil.</p><a href="/professionals.html?servico=manicure">Ver profissionais de unhas →</a></div></article>
+        <article class="inspiration-slide"><img src="/assets/inspiracao-make.jpg" alt="Maquiagem para uma ocasião especial"><div class="slide-caption"><span>02 · MAQUIAGEM</span><h3>Conte como será<br>a sua ocasião.</h3><p>Informe o horário, o local e o estilo que procura.</p><a href="/professionals.html?servico=maquiagem">Ver profissionais de maquiagem →</a></div></article>
+        <article class="inspiration-slide"><img src="/assets/inspiracao-cabelo.jpg" alt="Cabelo com corte e finalização"><div class="slide-caption"><span>03 · CABELO</span><h3>Leve referências<br>e fale da sua rotina.</h3><p>Explique o resultado que deseja e como cuida do cabelo.</p><a href="/professionals.html?servico=cabeleireiro">Ver profissionais de cabelo →</a></div></article>
+        <article class="inspiration-slide"><img src="/assets/inspiracao-autocuidado.jpg" alt="Cuidado e design de sobrancelhas"><div class="slide-caption"><span>04 · SOBRANCELHAS</span><h3>Mostre o formato<br>que você prefere.</h3><p>Imagens de referência ajudam a explicar o estilo desejado.</p><a href="/professionals.html?servico=sobrancelhas">Ver profissionais de sobrancelhas →</a></div></article>
+      </div>
+      <div class="carousel-dots" id="carousel-dots" aria-label="Escolha uma dica"></div>
+    </section>
+    <section class="cta-strip"><div><p class="eyebrow">PARA QUEM FAZ ACONTECER</p><h2>Seu talento merece ser encontrado.</h2><p>Crie seu perfil e apresente seu trabalho para novos clientes.</p></div><a class="button button-light" href="/register.html">Sou profissional <span aria-hidden="true">→</span></a></section>
+  </main>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand" id="sobre">
+        <a class="brand" href="/">click<span>beleza</span><i>.</i></a>
+        <p class="footer-text">Encontre profissionais de beleza, compare preços e solicite seu horário.</p>
+      </div>
+      <nav class="footer-col" aria-label="Para clientes"><p class="footer-title">Para clientes</p><a href="/services.html">Todos os serviços</a><a href="/professionals.html">Encontrar profissionais</a></nav>
+      <nav class="footer-col footer-col-professionals" aria-label="Para profissionais"><p class="footer-title">Para profissionais</p><a href="/register.html">Criar meu perfil</a><a href="/agenda.html">Pedidos e mensagens</a></nav>
+      <nav class="footer-col" aria-label="Para marcas"><p class="footer-title">Para marcas</p><a href="/#parceiras">Ver lojas parceiras</a><a href="/anunciar.html">Divulgar minha marca</a></nav>
+      <nav class="footer-col" aria-label="Atendimento"><p class="footer-title">Atendimento</p><a href="/#sobre">Quem somos</a><a href="/#beauty-chat">SAC</a><a href="/#beauty-chat">Contato</a><a href="https://www.instagram.com/sou_clickbeleza/" target="_blank" rel="noopener noreferrer">@sou_clickbeleza</a></nav>
+    </div>
+    <div class="footer-bottom"><span>© 2026 Click Beleza · Marília, SP</span><span>Mapas © OpenStreetMap contributors</span></div>
+  </footer>
+  <script src="api.js" defer></script>
+  <script src="app.js" defer></script>
+</body>
+</html>

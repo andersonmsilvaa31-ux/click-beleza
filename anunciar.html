@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Anuncie sua marca | Click Beleza</title><link rel="stylesheet" href="style.css"><script src="api.js" defer></script><script src="app.js" defer></script></head>
+<body>
+  <header class="site-header"><a class="brand" href="/">click<span>beleza</span><i>.</i></a><nav><a href="/services.html">Serviços</a><a href="/professionals.html">Encontrar profissionais</a><a class="nav-professional" href="/register.html">Sou profissional <span aria-hidden="true">→</span></a></nav></header>
+  <main class="form-shell">
+    <p class="eyebrow">PARA MARCAS E LOJAS</p>
+    <h1>Anuncie sua marca.</h1>
+    <p>Apareça na seção de lojas parceiras da página inicial para clientes e profissionais de beleza de Marília. Seu anúncio entra no ar assim que você cadastra.</p>
+
+    <div class="plan-grid" id="plan-grid">
+      <label class="plan-card"><input type="radio" name="planPick" value="basico"><strong>Básico</strong><b>R$ 49<small>/mês</small></b><span>Logo e descrição na lista de parceiras</span></label>
+      <label class="plan-card"><input type="radio" name="planPick" value="destaque" checked><strong>Destaque</strong><b>R$ 99<small>/mês</small></b><span>Aparece antes dos planos básicos</span></label>
+      <label class="plan-card"><input type="radio" name="planPick" value="premium"><strong>Premium</strong><b>R$ 199<small>/mês</small></b><span>Primeiras posições com selo premium</span></label>
+    </div>
+
+    <form class="form-card" id="advertise-form">
+      <div class="form-grid">
+        <h2 class="full">Dados da marca</h2>
+        <label>Nome da marca ou loja<input name="name" required maxlength="80" placeholder="Ex.: Beleza Pura Cosméticos"></label>
+        <label>Categoria<select name="category" required><option value="">Selecione</option><option value="cosmeticos">Cosméticos</option><option value="cabelo">Produtos para cabelo</option><option value="unhas">Unhas e esmaltes</option><option value="barba">Barba e barbearia</option><option value="perfumaria">Perfumaria</option><option value="estetica">Estética e skincare</option><option value="clinica">Clínica / spa</option><option value="outros">Outros</option></select></label>
+        <label class="full">Texto do anúncio <span class="form-note">(até 160 caracteres)</span><textarea name="description" required minlength="10" maxlength="160" placeholder="Ex.: Maquiagem e skincare com entrega rápida em Marília."></textarea></label>
+        <label class="full">Link do site ou Instagram <span class="form-note">(opcional)</span><input name="url" type="url" maxlength="300" placeholder="https://minhaloja.com.br"></label>
+        <label>E-mail de contato<input name="email" type="email" required maxlength="200" autocomplete="email"></label>
+        <label>Telefone / WhatsApp<input name="phone" type="tel" required maxlength="30" autocomplete="tel"></label>
+        <input type="hidden" name="plan" value="destaque">
+        <button class="button button-primary full" type="submit">Publicar anúncio <span aria-hidden="true">→</span></button>
+      </div>
+      <p id="advertise-feedback" class="form-feedback" aria-live="polite"></p>
+      <p class="form-note">Demonstração local: nenhuma cobrança é feita. Não inclua dados sensíveis.</p>
+    </form>
+
+    <div class="form-card" id="advertise-success" hidden>
+      <h2>Anúncio publicado! 🎉</h2>
+      <p>Sua marca já aparece na página inicial. Guarde este código para acompanhar cliques e pausar o anúncio:</p>
+      <p class="token-box"><code id="advertise-token"></code></p>
+      <a class="button button-primary" href="/#parceiras">Ver na página inicial</a>
+    </div>
+
+    <form class="form-card" id="stats-form">
+      <div class="form-grid">
+        <h2 class="full">Acompanhe seu anúncio</h2>
+        <label class="full">Código de acesso<input name="token" required autocomplete="off" placeholder="Cole aqui o código recebido ao publicar"></label>
+        <button class="button button-outline full" type="submit">Ver desempenho</button>
+      </div>
+      <div id="stats-result" class="stats-result" aria-live="polite"></div>
+    </form>
+  </main>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand" id="sobre">
+        <a class="brand" href="/">click<span>beleza</span><i>.</i></a>
+        <p class="footer-text">Encontre profissionais de beleza, compare preços e solicite seu horário.</p>
+      </div>
+      <nav class="footer-col" aria-label="Para clientes"><p class="footer-title">Para clientes</p><a href="/services.html">Todos os serviços</a><a href="/professionals.html">Encontrar profissionais</a></nav>
+      <nav class="footer-col footer-col-professionals" aria-label="Para profissionais"><p class="footer-title">Para profissionais</p><a href="/register.html">Criar meu perfil</a><a href="/agenda.html">Pedidos e mensagens</a></nav>
+      <nav class="footer-col" aria-label="Para marcas"><p class="footer-title">Para marcas</p><a href="/#parceiras">Ver lojas parceiras</a><a href="/anunciar.html">Divulgar minha marca</a></nav>
+      <nav class="footer-col" aria-label="Atendimento"><p class="footer-title">Atendimento</p><a href="/#sobre">Quem somos</a><a href="/#beauty-chat">SAC</a><a href="/#beauty-chat">Contato</a><a href="https://www.instagram.com/sou_clickbeleza/" target="_blank" rel="noopener noreferrer">@sou_clickbeleza</a></nav>
+    </div>
+    <div class="footer-bottom"><span>© 2026 Click Beleza · Marília, SP</span><span>Mapas © OpenStreetMap contributors</span></div>
+  </footer>
+</body>
+</html>

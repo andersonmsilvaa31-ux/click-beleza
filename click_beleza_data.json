@@ -1,0 +1,298 @@
+{
+  "professionals": [
+    {
+      "id": "demo-marilia-barbeiro",
+      "name": "Barbearia Exemplo Marília",
+      "service": "barbeiro",
+      "description": "Perfil demonstrativo para testar a busca, os serviços e os agendamentos do Click Beleza. Não representa um estabelecimento real.",
+      "address": "Endereço ilustrativo — região central",
+      "neighborhood": "Centro",
+      "city": "Marília",
+      "lat": -22.2175,
+      "lon": -49.9505,
+      "rating": 4.8,
+      "reviewCount": 12,
+      "color": "#c6d0c2",
+      "initials": "BE",
+      "demo": true,
+      "services": [
+        {
+          "name": "Corte masculino",
+          "price": 45,
+          "duration": 40
+        },
+        {
+          "name": "Corte e barba",
+          "price": 75,
+          "duration": 65
+        }
+      ],
+      "reviews": [
+        {
+          "rating": 5,
+          "customerName": "Avaliação exemplo",
+          "comment": "Perfil demonstrativo."
+        }
+      ]
+    },
+    {
+      "id": "demo-marilia-cabelo",
+      "name": "Studio Exemplo Beleza",
+      "service": "cabeleireiro",
+      "description": "Perfil demonstrativo para testar a busca, os serviços e os agendamentos do Click Beleza. Não representa um estabelecimento real.",
+      "address": "Endereço ilustrativo — região central",
+      "neighborhood": "Centro",
+      "city": "Marília",
+      "lat": -22.21,
+      "lon": -49.94,
+      "rating": 4.9,
+      "reviewCount": 18,
+      "color": "#f4d0c5",
+      "initials": "SE",
+      "demo": true,
+      "services": [
+        {
+          "name": "Corte e escova",
+          "price": 65,
+          "duration": 60
+        },
+        {
+          "name": "Hidratação",
+          "price": 80,
+          "duration": 60
+        }
+      ],
+      "reviews": []
+    },
+    {
+      "id": "demo-marilia-manicure",
+      "name": "Ateliê Exemplo de Unhas",
+      "service": "manicure",
+      "description": "Perfil demonstrativo para testar a busca, os serviços e os agendamentos do Click Beleza. Não representa um estabelecimento real.",
+      "address": "Endereço ilustrativo — região central",
+      "neighborhood": "Jardim Tangará",
+      "city": "Marília",
+      "lat": -22.225,
+      "lon": -49.96,
+      "rating": 4.7,
+      "reviewCount": 9,
+      "color": "#f4d0c5",
+      "initials": "AU",
+      "demo": true,
+      "services": [
+        {
+          "name": "Manicure tradicional",
+          "price": 40,
+          "duration": 45
+        },
+        {
+          "name": "Esmaltação em gel",
+          "price": 75,
+          "duration": 70
+        }
+      ],
+      "reviews": []
+    },
+    {
+      "id": "demo-camila",
+      "name": "Ateliê Camila",
+      "service": "manicure",
+      "description": "Unhas cuidadas com atenção aos detalhes. Este perfil e seus dados são apenas ilustrativos.",
+      "address": "Rua Augusta, 1000",
+      "neighborhood": "Consolação",
+      "city": "São Paulo",
+      "lat": -23.5532,
+      "lon": -46.6584,
+      "rating": 4.9,
+      "reviewCount": 28,
+      "color": "#f4d0c5",
+      "initials": "AC",
+      "demo": true,
+      "services": [
+        {
+          "name": "Manicure tradicional",
+          "price": 45,
+          "duration": 45
+        },
+        {
+          "name": "Esmaltação em gel",
+          "price": 85,
+          "duration": 75
+        }
+      ],
+      "reviews": [
+        {
+          "rating": 5,
+          "customerName": "Cliente exemplo",
+          "comment": "Atendimento cuidadoso e resultado lindo."
+        }
+      ]
+    },
+    {
+      "id": "demo-rafael",
+      "name": "Rafael Studio Barber",
+      "service": "barbeiro",
+      "description": "Cortes clássicos e modernos. Este perfil e seus dados são apenas ilustrativos.",
+      "address": "Rua Haddock Lobo, 450",
+      "neighborhood": "Cerqueira César",
+      "city": "São Paulo",
+      "lat": -23.5571,
+      "lon": -46.6622,
+      "rating": 4.8,
+      "reviewCount": 19,
+      "color": "#c6d0c2",
+      "initials": "RS",
+      "demo": true,
+      "services": [
+        {
+          "name": "Corte masculino",
+          "price": 60,
+          "duration": 45
+        },
+        {
+          "name": "Corte e barba",
+          "price": 95,
+          "duration": 70
+        }
+      ],
+      "reviews": []
+    },
+    {
+      "id": "demo-luiza",
+      "name": "Studio Luiza Pele",
+      "service": "sobrancelhas",
+      "description": "Design de sobrancelhas e cuidados faciais. Este perfil e seus dados são apenas ilustrativos.",
+      "address": "Alameda Santos, 700",
+      "neighborhood": "Jardim Paulista",
+      "city": "São Paulo",
+      "lat": -23.5651,
+      "lon": -46.6508,
+      "rating": 4.7,
+      "reviewCount": 14,
+      "color": "#e7d5b6",
+      "initials": "SL",
+      "demo": true,
+      "services": [
+        {
+          "name": "Design de sobrancelhas",
+          "price": 55,
+          "duration": 40
+        },
+        {
+          "name": "Design com henna",
+          "price": 75,
+          "duration": 50
+        }
+      ],
+      "reviews": []
+    }
+  ],
+  "bookings": [],
+  "partners": [
+    {
+      "id": "demo-pura",
+      "name": "Beleza Pura Cosméticos",
+      "category": "cosmeticos",
+      "description": "Maquiagem e skincare com entrega rápida em Marília.",
+      "url": "",
+      "plan": "premium",
+      "color": "#1fe36a",
+      "status": "active",
+      "clicks": 0,
+      "demo": true,
+      "createdAt": "2026-01-01"
+    },
+    {
+      "id": "demo-hairpro",
+      "name": "Hair Pro Store",
+      "category": "cabelo",
+      "description": "Shampoos, tintas e ferramentas para profissionais.",
+      "url": "",
+      "plan": "destaque",
+      "color": "#5df59b",
+      "status": "active",
+      "clicks": 0,
+      "demo": true,
+      "createdAt": "2026-01-02"
+    },
+    {
+      "id": "demo-nail",
+      "name": "Nail Lab Suprimentos",
+      "category": "unhas",
+      "description": "Esmaltes, gel e acessórios para nail designers.",
+      "url": "",
+      "plan": "destaque",
+      "color": "#a6f7c8",
+      "status": "active",
+      "clicks": 0,
+      "demo": true,
+      "createdAt": "2026-01-03"
+    },
+    {
+      "id": "demo-barba",
+      "name": "Barba & Cia",
+      "category": "barba",
+      "description": "Pomadas, óleos e máquinas para barbearias.",
+      "url": "",
+      "plan": "basico",
+      "color": "#7ff0ad",
+      "status": "active",
+      "clicks": 0,
+      "demo": true,
+      "createdAt": "2026-01-04"
+    },
+    {
+      "id": "demo-essencia",
+      "name": "Essência Aromas",
+      "category": "perfumaria",
+      "description": "Perfumes e hidratantes para presente.",
+      "url": "",
+      "plan": "basico",
+      "color": "#c8ffe0",
+      "status": "active",
+      "clicks": 0,
+      "demo": true,
+      "createdAt": "2026-01-05"
+    },
+    {
+      "id": "demo-bem-estar",
+      "name": "Loja Exemplo de Bem-estar",
+      "category": "estetica",
+      "description": "Produtos de autocuidado. Marca ilustrativa para demonstração.",
+      "url": "",
+      "plan": "basico",
+      "color": "#9cefc0",
+      "status": "active",
+      "clicks": 0,
+      "demo": true,
+      "createdAt": "2026-01-06"
+    },
+    {
+      "id": "demo-studio-pro",
+      "name": "Studio Pro Exemplo",
+      "category": "clinica",
+      "description": "Produtos profissionais de beleza. Marca ilustrativa para demonstração.",
+      "url": "",
+      "plan": "basico",
+      "color": "#7ce3a6",
+      "status": "active",
+      "clicks": 0,
+      "demo": true,
+      "createdAt": "2026-01-07"
+    },
+    {
+      "id": "demo-cuidado-diario",
+      "name": "Cuidado Diário Exemplo",
+      "category": "cosmeticos",
+      "description": "Cosméticos e itens de cuidado pessoal. Marca ilustrativa para demonstração.",
+      "url": "",
+      "plan": "basico",
+      "color": "#b1f2cc",
+      "status": "active",
+      "clicks": 0,
+      "demo": true,
+      "createdAt": "2026-01-08"
+    }
+  ],
+  "chats": []
+}
