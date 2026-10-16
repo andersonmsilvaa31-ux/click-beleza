@@ -169,7 +169,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--rose);box-shadow:0 0 
 .empty-state{border-color:#2c4033}.error-message{background:rgba(255,90,90,.1);color:#ff8a8a}
 .success-note{background:rgba(31,227,106,.1);border:1px solid rgba(31,227,106,.3);color:var(--rose-dark)}.demo-warning{background:#241f0a;color:#ecd160}
 .status-pill{background:#18221c;color:#9fb0a5}.status-confirmado,.status-concluido{background:rgba(31,227,106,.15);color:var(--rose)}.status-cancelado{background:rgba(255,90,90,.12);color:#ff8a8a}
-.review-card,.service-option,.booking-row,.payment-choice{background:var(--surface)}
+.review-card,.service-option,.booking-row,.payment-choice,.order-summary,.payment-success,.payment-method-option{background:var(--surface)}
 
 /* carrossel */
 .photo-carousel{background:var(--surface);border:1px solid var(--line)}
@@ -294,3 +294,23 @@ input:focus,select:focus,textarea:focus{border-color:var(--rose);box-shadow:0 0 
   .site-header{height:auto;min-height:66px;padding:10px 12px;align-items:flex-start;flex-direction:column;justify-content:center;gap:8px}
   .site-header nav{width:100%;justify-content:space-between;gap:6px}
 }
+.checkout-progress{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0 0 14px}
+.checkout-step{padding:8px 9px;border-radius:8px;background:var(--cream);color:var(--muted);font-size:10px;font-weight:700;text-align:center}
+.checkout-step.complete{background:#edf7ed;color:#365d3e}
+.checkout-step.active{background:var(--rose-pale);color:var(--rose-dark)}
+.checkout-title{margin:0 0 12px;font-size:17px}
+.checkout-title:focus{outline:2px solid var(--rose);outline-offset:3px;border-radius:2px}
+.order-summary,.payment-success{margin:0 0 12px;padding:13px;border:1px solid var(--line);border-radius:10px;background:var(--cream)}
+.order-summary .eyebrow{margin-bottom:5px;font-size:9px}
+.order-summary>p{margin:4px 0;color:var(--muted);font-size:12px}
+.order-summary .order-total{display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}
+.order-total strong{color:var(--ink);font-size:16px}
+.order-summary>small{color:var(--muted);font-size:10px}
+.payment-method-option{min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.payment-method-option>span{display:grid;gap:2px}
+.payment-method-option strong{color:var(--ink);font-size:12px}
+.payment-method-option small{color:var(--muted);font-size:10px;font-weight:400}
+.payment-success h3{margin:0 0 7px;font-size:18px}
+.payment-success p{margin:6px 0;color:var(--muted);font-size:12px}
+.payment-success strong{color:var(--ink)}
+.booking-box [data-cancel-order]{margin-top:7px}

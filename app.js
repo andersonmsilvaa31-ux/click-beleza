@@ -49,8 +49,38 @@ function parseLocation(value) {
   return coordinates ? { lat: coordinates[1], lon: coordinates[2] } : { city: value };
 }
 
-function bookingPaymentSummary() {
-  return "Pagamento no local";
+function bookingPaymentSummary(booking) {
+  const methods = { pix: "Pix", cartao: "cartão" };
+  if (booking.paymentStatus === "demo_completed") {
+    return `Pagamento demonstrativo por ${methods[booking.paymentMethod] || "método não informado"}; nenhuma cobrança foi feita. Recebedor previsto: Click Beleza.`;
+  }
+  if (booking.paymentStatus === "demo_pending") {
+    return "Pagamento demonstrativo pendente; nenhuma cobrança foi feita.";
+  }
+  return "Pagamento não informado.";
+}
+
+function bookingPaymentCheckout(booking) {
+  const dateLabel = new Date(`${booking.date}T12:00:00`).toLocaleDateString("pt-BR");
+  return `<div class="checkout-progress" aria-label="Etapas do pedido">
+      <span class="checkout-step complete">1 · Pedido enviado</span><span class="checkout-step active">2 · Pagamento</span>
+    </div>
+    <h3 class="checkout-title" id="checkout-heading" tabindex="-1">Finalize seu pedido</h3>
+    <div class="order-summary"><p class="eyebrow">RESUMO DO PEDIDO</p><strong>${escapeHtml(booking.professionalName)}</strong>
+      <p>${escapeHtml(booking.serviceName)} · ${dateLabel} às ${escapeHtml(booking.time)}</p>
+      <p class="order-total">Total demonstrativo <strong>${money(booking.price)}</strong></p>
+      <small>Código do pedido: ${escapeHtml(booking.id)}</small>
+    </div>
+    <fieldset class="payment-choice"><legend>Escolha uma forma de pagamento</legend>
+      <p class="payment-disclaimer">O recebedor previsto seria Click Beleza, mas este checkout é apenas demonstrativo: nenhuma cobrança, transferência ou repasse será realizado. Não informe dados de cartão.</p>
+      <div class="payment-methods">
+        <label class="payment-method-option"><input type="radio" name="paymentMethod" value="pix" required checked><span><strong>Pix</strong><small>Simulação, sem QR Code ou transferência real</small></span></label>
+        <label class="payment-method-option"><input type="radio" name="paymentMethod" value="cartao" required><span><strong>Cartão</strong><small>Simulação, sem inserir dados do cartão</small></span></label>
+      </div>
+    </fieldset>
+    <button class="button button-primary button-wide" type="submit">Concluir etapa demonstrativa</button>
+    <button class="button button-outline button-wide" type="button" data-cancel-order>Cancelar pedido</button>
+    <p class="form-feedback" id="booking-feedback" aria-live="polite"></p>`;
 }
 
 function professionalCard(professional) {
@@ -347,8 +377,8 @@ async function initProfessional() {
           <label>Seu nome<input name="customerName" required maxlength="100" autocomplete="name"></label>
           <label>Telefone / WhatsApp<input type="tel" name="customerPhone" required maxlength="30" autocomplete="tel"></label>
           <div class="booking-when"><label>Data<input type="date" name="date" required></label><label>Horário<select name="time" required><option value="">Selecione</option>${["09:00","10:00","11:00","13:00","14:00","15:00","16:00","17:00"].map(time => `<option>${time}</option>`).join("")}</select></label></div>
-          <p class="pay-note">🏬 <strong>Pagamento no local</strong>, direto com o profissional. Não cobramos nada pelo site.</p>
-          <button class="button button-primary button-wide" type="submit">Solicitar agendamento</button><p id="booking-feedback" class="form-feedback" aria-live="polite"></p>
+          <p class="pay-note"><strong>Como funciona:</strong> envie o pedido e, na próxima etapa, escolha Pix ou cartão para uma simulação. Nenhum pagamento real será feito.</p>
+          <button class="button button-primary button-wide" type="submit">Enviar pedido e continuar</button><p id="booking-feedback" class="form-feedback" aria-live="polite"></p>
         </form><small class="booking-disclaimer">Seu horário só fica reservado após confirmação do profissional.</small>`
           : `<p class="muted-copy">Este profissional ainda está cadastrando os serviços. Volte em breve para consultar horários.</p><a class="button button-outline button-wide" href="/professionals.html">Ver outros profissionais</a>`}
       </aside>
@@ -360,22 +390,74 @@ async function initProfessional() {
     if (bookingForm) {
       const dateInput = bookingForm.querySelector('[name="date"]');
       dateInput.min = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+      let currentBooking = null;
       bookingForm.addEventListener("submit", async event => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const service = services[Number(document.querySelector('[name="booking-service"]:checked').value)];
-      const data = Object.fromEntries(new FormData(form));
-      data.serviceName = service.name;
-      data.price = service.price;
-      const feedback = document.getElementById("booking-feedback");
-      const button = form.querySelector('[type="submit"]');
-      button.disabled = true; feedback.textContent = "Enviando solicitação…";
-      try {
-        const result = await chamarAPI("agendamentos", { method: "POST", body: JSON.stringify(data) });
-        feedback.innerHTML = `Pedido enviado! Código <strong>${escapeHtml(result.booking.id)}</strong>. Aguarde a confirmação do profissional e pague no local.`;
-        form.reset();
-      } catch (error) { feedback.textContent = error.message; }
-      button.disabled = false;
+        event.preventDefault();
+        const form = event.currentTarget;
+        const feedback = document.getElementById("booking-feedback");
+        const button = form.querySelector('[type="submit"]');
+        button.disabled = true;
+        try {
+          if (currentBooking) {
+            const paymentMethod = form.querySelector('[name="paymentMethod"]:checked')?.value;
+            if (!paymentMethod) {
+              feedback.textContent = "Escolha Pix ou cartão para continuar.";
+              return;
+            }
+            feedback.textContent = "Registrando a etapa demonstrativa…";
+            const result = await chamarAPI(`agendamentos/${encodeURIComponent(currentBooking.id)}/pagamento`, {
+              method: "POST", body: JSON.stringify({ paymentMethod })
+            });
+            currentBooking = result.booking;
+            form.innerHTML = `<div class="checkout-progress" aria-label="Etapas do pedido"><span class="checkout-step complete">1 · Pedido enviado</span><span class="checkout-step complete">2 · Demonstração concluída</span></div>
+              <div class="payment-success"><p class="eyebrow">ETAPA CONCLUÍDA</p><h3 class="checkout-title" id="checkout-heading" tabindex="-1">Pedido registrado</h3>
+                <p>O pagamento por ${escapeHtml(paymentMethod === "pix" ? "Pix" : "cartão")} foi apenas simulado. <strong>Nenhuma cobrança ou transferência foi realizada.</strong></p>
+                <p>O pedido <strong>${escapeHtml(currentBooking.id)}</strong> continua aguardando a confirmação do profissional.</p>
+                <p>Total do pedido: <strong>${money(currentBooking.price)}</strong></p>
+              </div>
+              <button class="button button-outline button-wide" type="button" data-cancel-order>Cancelar pedido</button>
+              <p class="form-feedback" id="booking-feedback" aria-live="polite"></p>`;
+            form.querySelector("#checkout-heading")?.focus();
+            return;
+          }
+
+          feedback.textContent = "Enviando pedido…";
+          const serviceInput = document.querySelector('[name="booking-service"]:checked');
+          const service = serviceInput && services[Number(serviceInput.value)];
+          if (!service) {
+            feedback.textContent = "Escolha um serviço antes de continuar.";
+            return;
+          }
+          const data = Object.fromEntries(new FormData(form));
+          data.serviceName = service.name;
+          data.price = service.price;
+          const result = await chamarAPI("agendamentos", { method: "POST", body: JSON.stringify(data) });
+          currentBooking = result.booking;
+          form.innerHTML = bookingPaymentCheckout(currentBooking);
+          form.querySelector("#checkout-heading")?.focus();
+        } catch (error) {
+          feedback.textContent = error.message;
+        } finally {
+          const activeButton = form.querySelector('[type="submit"]');
+          if (activeButton) activeButton.disabled = false;
+        }
+      });
+      bookingForm.addEventListener("click", async event => {
+        const button = event.target.closest("[data-cancel-order]");
+        if (!button || !currentBooking) return;
+        button.disabled = true;
+        const feedback = document.getElementById("booking-feedback");
+        try {
+          const result = await chamarAPI(`agendamentos/${encodeURIComponent(currentBooking.id)}/status`, {
+            method: "PATCH", body: JSON.stringify({ status: "cancelado" })
+          });
+          currentBooking = result.booking;
+          bookingForm.innerHTML = `<div class="payment-success"><h3 class="checkout-title" id="checkout-heading" tabindex="-1">Pedido cancelado</h3><p>Nenhum valor foi cobrado. ${bookingPaymentSummary(currentBooking)}</p><p>Código do pedido: <strong>${escapeHtml(currentBooking.id)}</strong></p></div>`;
+          bookingForm.querySelector("#checkout-heading")?.focus();
+        } catch (error) {
+          feedback.textContent = error.message;
+          button.disabled = false;
+        }
       });
     }
   } catch (error) {
@@ -606,7 +688,7 @@ function initChatbot() {
         label: "Abrir busca no Google Maps ↗", external: true
       });
     } else if (/agenda|agendar|horário|horario|marcar|reserva/.test(text)) {
-      addMessage("Escolha um profissional e serviço, selecione data e horário e envie o pedido. O horário só fica reservado após a confirmação.", "bot", { href: serviceEntry ? `/professionals.html?servico=${serviceEntry[0]}` : "/professionals.html", label: "Encontrar profissionais" });
+      addMessage("Escolha o profissional, serviço, data e horário e envie o pedido. Em seguida, você verá uma etapa demonstrativa de Pix ou cartão, sem cobrança real. O horário só fica reservado após a confirmação do profissional.", "bot", { href: serviceEntry ? `/professionals.html?servico=${serviceEntry[0]}` : "/professionals.html", label: "Encontrar profissionais" });
     } else if (/foto|vídeo|video|portfólio|portfolio/.test(text)) {
       addMessage("Adicione até 8 fotos ou vídeos ao seu perfil. Você pode fazer isso agora ou depois.", "bot", { href: "/register.html", label: "Completar meu perfil" });
     } else if (/preço|preco|valor|perto|cidade|busca|buscar|encontr/.test(text) || serviceEntry) {

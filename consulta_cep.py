@@ -355,7 +355,9 @@ def canonical_api_path(path):
     if path == "/api/agendamentos":
         return "/api/bookings"
     if path.startswith("/api/agendamentos/"):
-        return "/api/bookings/" + path[len("/api/agendamentos/"):]
+        suffix = path[len("/api/agendamentos/"):]
+        suffix = re.sub(r"/pagamento$", "/payment", suffix)
+        return "/api/bookings/" + suffix
     return path
 
 
@@ -425,6 +427,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._create_professional(data)
             elif parsed.path == "/api/bookings":
                 self._create_booking(data)
+            elif re.fullmatch(r"/api/bookings/[^/]+/payment", parsed.path):
+                self._simulate_booking_payment(parsed.path.split("/")[-2], data)
             elif parsed.path == "/api/chats":
                 self._create_chat(data)
             elif re.fullmatch(r"/api/chats/[^/]+/messages", parsed.path):
@@ -935,11 +939,45 @@ class AppHandler(BaseHTTPRequestHandler):
                 "customerEmail": email, "customerPhone": data["customerPhone"].strip()[:30],
                 "date": data["date"], "time": data["time"], "serviceName": data["serviceName"].strip()[:100],
                 "price": price, "status": "solicitado", "review": False,
-                "paymentDestination": "estabelecimento", "paymentMethod": None, "cardBrand": None,
+                "paymentMode": "demo", "paymentStatus": "demo_pending",
+                "paymentDestination": "clickbeleza", "paymentMethod": None,
             }
             stored["bookings"].append(booking)
             save_data(stored)
         self._json(201, {"booking": booking})
+
+    def _simulate_booking_payment(self, booking_id, data):
+        payment_method = data.get("paymentMethod")
+        if not isinstance(payment_method, str) or payment_method not in {"pix", "cartao"}:
+            raise ValueError("Escolha Pix ou cartão para a demonstração.")
+        with DATA_LOCK:
+            stored = load_data()
+            booking = next((item for item in stored["bookings"] if item["id"] == booking_id), None)
+            if not booking:
+                self._json(404, {"error": "Pedido de agendamento não encontrado."})
+                return
+            if booking.get("status") not in {"solicitado", "confirmado"}:
+                self._json(409, {"error": "Este pedido não aceita mais uma etapa de pagamento."})
+                return
+            if booking.get("paymentMode") != "demo" or booking.get("paymentDestination") != "clickbeleza":
+                self._json(409, {"error": "Este pedido não está configurado para o checkout demonstrativo."})
+                return
+            if booking.get("paymentStatus") == "demo_completed":
+                if booking.get("paymentMethod") != payment_method:
+                    self._json(409, {"error": "A etapa demonstrativa deste pedido já foi concluída."})
+                    return
+                self._json(200, {"booking": booking, "message": "Etapa demonstrativa já concluída; nenhuma cobrança foi feita."})
+                return
+            if booking.get("paymentStatus") != "demo_pending":
+                self._json(409, {"error": "A etapa demonstrativa deste pedido não está disponível."})
+                return
+            booking["paymentStatus"] = "demo_completed"
+            booking["paymentMethod"] = payment_method
+            save_data(stored)
+        self._json(200, {
+            "booking": booking,
+            "message": "Pagamento apenas simulado. Nenhuma cobrança, transferência ou repasse foi realizado.",
+        })
 
     def _list_bookings(self):
         try:
