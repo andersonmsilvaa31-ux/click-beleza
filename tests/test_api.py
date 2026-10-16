@@ -190,7 +190,7 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertIn("cidade", response["error"])
         upstream.assert_not_called()
 
-    def test_booking_is_always_paid_at_the_establishment(self):
+    def test_booking_starts_demo_checkout_and_ignores_client_payment_state(self):
         payload = {
             "professionalId": "test-professional",
             "customerName": "Cliente de teste",
@@ -199,16 +199,75 @@ class ApiIntegrationTests(unittest.TestCase):
             "time": "10:00",
             "serviceName": "Corte masculino",
             "price": 45,
-            "paymentDestination": "app",
+            "paymentDestination": "estabelecimento",
+            "paymentStatus": "pago",
             "paymentMethod": "credito",
+            "cardNumber": "4111111111111111",
         }
         status, response = self.post_json("/api/agendamentos", payload)
         self.assertEqual(status, 201)
         booking = response["booking"]
-        self.assertEqual(booking["paymentDestination"], "estabelecimento")
+        self.assertEqual(booking["paymentMode"], "demo")
+        self.assertEqual(booking["paymentStatus"], "demo_pending")
+        self.assertEqual(booking["paymentDestination"], "clickbeleza")
         self.assertIsNone(booking["paymentMethod"])
         self.assertEqual(booking["customerEmail"], "")
         self.assertNotIn("cardNumber", booking)
+
+    def test_demo_payment_records_method_without_processing_money(self):
+        payload = {
+            "professionalId": "test-professional",
+            "customerName": "Cliente de teste",
+            "customerPhone": "11999999999",
+            "date": (date.today() + timedelta(days=1)).isoformat(),
+            "time": "10:00",
+            "serviceName": "Corte masculino",
+            "price": 45,
+        }
+        status, response = self.post_json("/api/agendamentos", payload)
+        self.assertEqual(status, 201)
+        booking_id = response["booking"]["id"]
+
+        status, response = self.post_json(
+            f"/api/agendamentos/{booking_id}/pagamento",
+            {"paymentMethod": "pix", "cardNumber": "4111111111111111"},
+        )
+
+        self.assertEqual(status, 200)
+        booking = response["booking"]
+        self.assertEqual(booking["paymentMode"], "demo")
+        self.assertEqual(booking["paymentDestination"], "clickbeleza")
+        self.assertEqual(booking["paymentStatus"], "demo_completed")
+        self.assertEqual(booking["paymentMethod"], "pix")
+        self.assertNotIn("cardNumber", booking)
+        self.assertIn("nenhuma cobrança", response["message"].casefold())
+
+        status, duplicate = self.post_json(
+            f"/api/agendamentos/{booking_id}/pagamento", {"paymentMethod": "pix"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(duplicate["booking"]["paymentStatus"], "demo_completed")
+
+    def test_demo_payment_rejects_unsupported_method_without_changing_order(self):
+        payload = {
+            "professionalId": "test-professional",
+            "customerName": "Cliente de teste",
+            "customerPhone": "11999999999",
+            "date": (date.today() + timedelta(days=1)).isoformat(),
+            "time": "10:00",
+            "serviceName": "Corte masculino",
+            "price": 45,
+        }
+        status, response = self.post_json("/api/agendamentos", payload)
+        self.assertEqual(status, 201)
+
+        status, response = self.post_json(
+            f"/api/agendamentos/{response['booking']['id']}/pagamento",
+            {"paymentMethod": {"card": "not accepted"}},
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("Pix ou cartão", response["error"])
 
     def test_invalid_optional_email_is_rejected(self):
         payload = {
