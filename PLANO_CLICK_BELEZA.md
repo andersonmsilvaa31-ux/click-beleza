@@ -33,6 +33,10 @@ o banco estão na URL sem senha, e o cliente PostgreSQL lê a senha do arquivo
 local `pgpass.conf`. Para iniciar manualmente fora do VS Code, defina
 `CLICK_BELEZA_DATABASE_URL` como
 `postgresql://click_beleza_app@127.0.0.1:5432/click_beleza`.
+Para abrir o mesmo banco no pgAdmin, registre um servidor com host
+`127.0.0.1`, porta `5432`, banco de manutenção `postgres` e usuário
+`postgres`; informe a senha diretamente na janela do pgAdmin e expanda
+`Databases > click_beleza`.
 
 Sem `CLICK_BELEZA_DATABASE_URL`, o backend mantém o armazenamento JSON para
 testes e execução independente. Acesse `http://127.0.0.1:8765`. Os perfis
@@ -53,9 +57,9 @@ No VS Code, use **Terminal → Run Task → Click Beleza: iniciar servidor local
 (também é a tarefa padrão de build, acionada por `Ctrl+Shift+B`). Para rodar a
 suíte de testes, selecione **Click Beleza: testar API** em **Terminal → Run
 Task**. A configuração de depuração está disponível em **Run and Debug**.
-O projeto usa somente a biblioteca padrão do Python, sem pacotes adicionais.
-As extensões Python e Pylance recomendadas pelo workspace já estão instaladas
-neste ambiente.
+O backend usa a biblioteca padrão e o driver `psycopg` listado em
+`requirements.txt`. As extensões Python e Pylance estão instaladas neste
+ambiente; a extensão PostgreSQL também é recomendada pelo workspace.
 
 ### API HTTP
 
