@@ -25,10 +25,13 @@ python consulta_cep.py
 ```
 
 No VS Code, a tarefa e a configuração de depuração selecionam o banco
-`click_beleza` no PostgreSQL local. A primeira conexão cria a tabela
-`click_beleza_state` e migra automaticamente os dados de
-`click_beleza_data.json` se o banco ainda estiver vazio. As próximas alterações
-são salvas no PostgreSQL. A senha não fica no código: o usuário da aplicação e
+`click_beleza` no PostgreSQL local. A primeira conexão cria as tabelas relacionais
+(`professionals`, `users`, `sessions`, `bookings`, `chats`, `partners`,
+`financial_transactions`, `privacy_requests`, `booking_slots`) com chaves
+estrangeiras e e-mail único, e migra uma única vez o estado antigo
+(`click_beleza_state`, mantida como `click_beleza_state_legacy`) ou o arquivo
+`click_beleza_data.json`. As próximas alterações são salvas só nas linhas que
+mudaram, em transação. A senha não fica no código: o usuário da aplicação e
 o banco estão na URL sem senha, e o cliente PostgreSQL lê a senha do arquivo
 local `pgpass.conf`. Para iniciar manualmente fora do VS Code, defina
 `CLICK_BELEZA_DATABASE_URL` como

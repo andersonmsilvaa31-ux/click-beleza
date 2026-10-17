@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 import psycopg
-
+from psycopg.types.json import Jsonb
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_FILE = APP_DIR / "click_beleza_data.json"
@@ -437,6 +437,109 @@ def release_booking_slots(booking_id):
 _SCHEMA_READY = set()
 _SCHEMA_LOCK = threading.Lock()
 
+# Cada lista do estado vira uma tabela: id, ordem de inserção (seq), colunas indexadas e o registro completo em JSONB.
+RELATIONAL_DDL = (
+    """CREATE TABLE IF NOT EXISTS click_beleza_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS professionals (
+        id TEXT PRIMARY KEY, seq BIGINT GENERATED ALWAYS AS IDENTITY, payload JSONB NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY, seq BIGINT GENERATED ALWAYS AS IDENTITY, payload JSONB NOT NULL,
+        email TEXT NOT NULL, professional_id TEXT REFERENCES professionals (id))""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users (email)",
+    """CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY, seq BIGINT GENERATED ALWAYS AS IDENTITY, payload JSONB NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE, expires_at DOUBLE PRECISION)""",
+    """CREATE TABLE IF NOT EXISTS bookings (
+        id TEXT PRIMARY KEY, seq BIGINT GENERATED ALWAYS AS IDENTITY, payload JSONB NOT NULL,
+        professional_id TEXT NOT NULL REFERENCES professionals (id), status TEXT, day TEXT)""",
+    "CREATE INDEX IF NOT EXISTS bookings_professional_day ON bookings (professional_id, day)",
+    "CREATE INDEX IF NOT EXISTS bookings_status ON bookings (status)",
+    """CREATE TABLE IF NOT EXISTS chats (
+        id TEXT PRIMARY KEY, seq BIGINT GENERATED ALWAYS AS IDENTITY, payload JSONB NOT NULL,
+        professional_id TEXT REFERENCES professionals (id))""",
+    """CREATE TABLE IF NOT EXISTS partners (
+        id TEXT PRIMARY KEY, seq BIGINT GENERATED ALWAYS AS IDENTITY, payload JSONB NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS financial_transactions (
+        id TEXT PRIMARY KEY, seq BIGINT GENERATED ALWAYS AS IDENTITY, payload JSONB NOT NULL,
+        professional_id TEXT REFERENCES professionals (id))""",
+    """CREATE TABLE IF NOT EXISTS privacy_requests (
+        id TEXT PRIMARY KEY, seq BIGINT GENERATED ALWAYS AS IDENTITY, payload JSONB NOT NULL, status TEXT)""",
+)
+# (chave no estado, tabela, colunas extras, extrator) em ordem de dependência (pais antes dos filhos).
+ENTITY_TABLES = (
+    ("professionals", "professionals", (), lambda i: ()),
+    ("users", "users", ("email", "professional_id"),
+     lambda i: (str(i.get("email", "")).casefold(), i.get("professionalId"))),
+    ("sessions", "sessions", ("user_id", "expires_at"), lambda i: (i["userId"], i.get("expiresAt"))),
+    ("bookings", "bookings", ("professional_id", "status", "day"),
+     lambda i: (i.get("professionalId"), i.get("status"), i.get("date"))),
+    ("chats", "chats", ("professional_id",), lambda i: (i.get("professionalId"),)),
+    ("partners", "partners", (), lambda i: ()),
+    ("financialTransactions", "financial_transactions", ("professional_id",), lambda i: (i.get("professionalId"),)),
+    ("privacyRequests", "privacy_requests", ("status",), lambda i: (i.get("status"),)),
+)
+ENTITY_ID_FIELD = {"sessions": "tokenHash"}
+
+
+def _read_state(connection):
+    return {
+        key: [row[0] for row in connection.execute(f"SELECT payload FROM {table} ORDER BY seq")]
+        for key, table, _columns, _extras in ENTITY_TABLES
+    }
+
+
+def _write_state(connection, data):
+    """Sincroniza o estado com as tabelas: remove o que saiu, insere e atualiza só o que mudou."""
+    _validate_data(data)
+    prepared = []
+    for key, table, columns, extras in ENTITY_TABLES:
+        id_field = ENTITY_ID_FIELD.get(key, "id")
+        items = {}
+        for item in data[key]:
+            identifier = item.get(id_field) if isinstance(item, dict) else None
+            if not isinstance(identifier, str) or not identifier:
+                raise RuntimeError(f"Registro sem identificador em {key}.")
+            if identifier in items:
+                raise RuntimeError(f"Identificador duplicado em {key}: {identifier}")
+            items[identifier] = item
+        prepared.append((table, columns, extras, items))
+    current = {}
+    for table, _columns, _extras, items in reversed(prepared):
+        current[table] = {row[0]: row[1] for row in connection.execute(f"SELECT id, payload FROM {table}")}
+        stale = [identifier for identifier in current[table] if identifier not in items]
+        if stale:
+            connection.execute(f"DELETE FROM {table} WHERE id = ANY(%s)", (stale,))
+    for table, columns, extras, items in prepared:
+        changed = [(identifier, item) for identifier, item in items.items() if current[table].get(identifier) != item]
+        if not changed:
+            continue
+        names = "".join(f", {column}" for column in columns)
+        marks = ", %s" * len(columns)
+        updates = "".join(f", {column} = EXCLUDED.{column}" for column in columns)
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                f"INSERT INTO {table} (id, payload{names}) VALUES (%s, %s{marks}) "
+                f"ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload{updates}",
+                [(identifier, Jsonb(item), *extras(item)) for identifier, item in changed],
+            )
+
+
+def _migrate_state(connection):
+    """Primeira execução: importa o JSON único antigo (ou o arquivo de exemplo) para as tabelas relacionais."""
+    with connection.transaction():
+        if connection.execute("SELECT 1 FROM click_beleza_meta WHERE key = 'initialized'").fetchone():
+            return
+        legacy = connection.execute("SELECT to_regclass('click_beleza_state')::text").fetchone()[0]
+        data = None
+        if legacy:
+            row = connection.execute("SELECT payload FROM click_beleza_state WHERE id = 1").fetchone()
+            data = row[0] if row else None
+        source = "legado" if data else "arquivo"
+        _write_state(connection, data if data else _load_file_data())
+        connection.execute("INSERT INTO click_beleza_meta (key, value) VALUES ('initialized', %s)", (source,))
+        if legacy:
+            connection.execute("ALTER TABLE click_beleza_state RENAME TO click_beleza_state_legacy")
+
 
 def ensure_schema():
     """Cria as tabelas uma vez por URL, com trava; CREATE TABLE IF NOT EXISTS concorrente falha no PostgreSQL."""
@@ -450,14 +553,8 @@ def ensure_schema():
             with psycopg.connect(key, connect_timeout=5, autocommit=True) as connection:
                 connection.execute("SELECT pg_advisory_lock(%s)", (DataLock.ADVISORY_KEY + 1,))
                 try:
-                    connection.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS click_beleza_state (
-                            id SMALLINT PRIMARY KEY CHECK (id = 1),
-                            payload JSONB NOT NULL
-                        )
-                        """
-                    )
+                    for statement in RELATIONAL_DDL:
+                        connection.execute(statement)
                     connection.execute(
                         """
                         CREATE TABLE IF NOT EXISTS booking_slots (
@@ -470,26 +567,12 @@ def ensure_schema():
                         """
                     )
                     connection.execute("CREATE INDEX IF NOT EXISTS booking_slots_booking_id ON booking_slots (booking_id)")
+                    _migrate_state(connection)
                 finally:
                     connection.execute("SELECT pg_advisory_unlock(%s)", (DataLock.ADVISORY_KEY + 1,))
         except psycopg.Error as error:
             raise RuntimeError("Não foi possível preparar as tabelas do banco de dados.") from error
         _SCHEMA_READY.add(key)
-
-
-def _ensure_database_state(cursor):
-    cursor.execute("SELECT payload FROM click_beleza_state WHERE id = 1")
-    row = cursor.fetchone()
-    if row is None:
-        initial_data = _load_file_data()
-        cursor.execute(
-            """
-            INSERT INTO click_beleza_state (id, payload)
-            VALUES (1, %s::jsonb)
-            ON CONFLICT (id) DO NOTHING
-            """,
-            (json.dumps(initial_data, ensure_ascii=False),),
-        )
 
 
 def load_data():
@@ -499,10 +582,8 @@ def load_data():
         try:
             ensure_schema()
             with psycopg.connect(DATABASE_URL, connect_timeout=5) as connection:
-                with connection.cursor() as cursor:
-                    _ensure_database_state(cursor)
-                    cursor.execute("SELECT payload FROM click_beleza_state WHERE id = 1")
-                    return _validate_data(cursor.fetchone()[0])
+                connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                return _validate_data(_read_state(connection))
         except psycopg.Error as error:
             raise RuntimeError(
                 "Não foi possível conectar ao PostgreSQL do Click Beleza. "
@@ -517,16 +598,10 @@ def save_data(data):
             ensure_schema()
             try:
                 with psycopg.connect(DATABASE_URL, connect_timeout=5) as connection:
-                    with connection.cursor() as cursor:
-                        _ensure_database_state(cursor)
-                        cursor.execute(
-                            """
-                            UPDATE click_beleza_state SET payload = %s::jsonb WHERE id = 1
-                            """,
-                            (json.dumps(data, ensure_ascii=False),),
-                        )
+                    _write_state(connection, data)
                 return
             except psycopg.Error as error:
+                print(json.dumps({"event": "save_data_failed", "error": str(error)[:300]}, ensure_ascii=False), flush=True)
                 raise RuntimeError(
                     "Não foi possível salvar os dados no PostgreSQL do Click Beleza. "
                     "Verifique o serviço e as permissões do banco."

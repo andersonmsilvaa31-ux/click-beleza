@@ -19,11 +19,15 @@ def main():
         return 2
     problems = []
     with psycopg.connect(url, connect_timeout=5) as connection:
-        row = connection.execute("SELECT payload FROM click_beleza_state LIMIT 1").fetchone()
-        if not row:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import consulta_cep as backend
+
+        backend.DATABASE_URL = url
+        backend.ensure_schema()
+        state = backend._read_state(connection)
+        if not state["professionals"]:
             print("Banco vazio: nenhum estado salvo.")
             return 1
-        state = row[0]
         slots = connection.execute("SELECT booking_id, professional_id, day FROM booking_slots").fetchall()
 
     professionals = {item["id"] for item in state["professionals"]}

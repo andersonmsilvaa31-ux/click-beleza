@@ -24,11 +24,11 @@ def backup(folder):
     backend.DATABASE_URL = url
     backend.ensure_schema()
     with psycopg.connect(url, connect_timeout=5) as connection:
-        row = connection.execute("SELECT payload FROM click_beleza_state WHERE id = 1").fetchone()
+        state = backend._read_state(connection)
         slots = connection.execute(
             "SELECT professional_id, day::text, slot, booking_id FROM booking_slots ORDER BY 1, 2, 3"
         ).fetchall()
-    snapshot = {"createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"), "state": row[0] if row else None, "slots": slots}
+    snapshot = {"createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"), "state": state, "slots": slots}
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{time.strftime('%Y%m%d-%H%M%S')}.backup.json"
     target.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
@@ -48,11 +48,7 @@ def restore(path):
     with psycopg.connect(url, connect_timeout=5) as connection:
         with connection.transaction():
             connection.execute("SELECT pg_advisory_xact_lock(%s)", (backend.DataLock.ADVISORY_KEY,))
-            connection.execute(
-                "INSERT INTO click_beleza_state (id, payload) VALUES (1, %s::jsonb) "
-                "ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload",
-                (json.dumps(snapshot["state"], ensure_ascii=False),),
-            )
+            backend._write_state(connection, snapshot["state"])
             connection.execute("DELETE FROM booking_slots")
             with connection.cursor() as cursor:
                 cursor.executemany(

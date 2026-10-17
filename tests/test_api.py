@@ -1088,6 +1088,55 @@ class PostgresBookingSlotTests(unittest.TestCase):
         self.assertEqual(self.slot_owner(created["booking"]["id"]), 0)
         self.assertEqual(request("/api/bookings", order)[0], 201)
 
+    def test_relational_round_trip_order_constraints_and_legacy_migration(self):
+        pro = copy.deepcopy(backend.SAMPLE_PROFESSIONALS[0])
+        pro.update({"id": "rel-pro", "demo": False})
+        user = {"id": "u1", "email": "Ana@Example.com", "professionalId": "rel-pro"}
+        state = {"professionals": [pro], "users": [user],
+                 "sessions": [{"tokenHash": "h1", "userId": "u1", "expiresAt": 9999999999}],
+                 "bookings": [{"id": "b2", "professionalId": "rel-pro", "date": "2030-01-01", "status": "confirmado"},
+                              {"id": "b1", "professionalId": "rel-pro", "date": "2030-01-02", "status": "solicitado"}]}
+        backend.save_data(state)
+        loaded = backend.load_data()
+        self.assertEqual([b["id"] for b in loaded["bookings"]], ["b2", "b1"])
+        self.assertEqual(loaded["sessions"][0]["tokenHash"], "h1")
+        # remover o usuário remove a sessão em cascata e atualizações são idempotentes
+        state["users"], state["sessions"] = [], []
+        backend.save_data(state)
+        self.assertEqual(backend.load_data()["users"], [])
+        # chave estrangeira: agendamento de profissional inexistente falha
+        bad = copy.deepcopy(state)
+        bad["bookings"].append({"id": "b3", "professionalId": "ghost"})
+        with self.assertRaises(RuntimeError):
+            backend.save_data(bad)
+        # e-mail único sem diferenciar maiúsculas
+        dup = copy.deepcopy(state)
+        dup["users"] = [user, {"id": "u2", "email": "ana@example.com", "professionalId": None}]
+        with self.assertRaises(RuntimeError):
+            backend.save_data(dup)
+        # a falha não altera o estado salvo
+        self.assertEqual(len(backend.load_data()["bookings"]), 2)
+
+    def test_legacy_json_state_is_migrated_once(self):
+        base = self.original_url
+        backend._SCHEMA_READY.clear()
+        pro = copy.deepcopy(backend.SAMPLE_PROFESSIONALS[0])
+        pro.update({"id": "legacy-pro", "demo": False})
+        legacy = {"professionals": [pro], "bookings": [{"id": "L1", "professionalId": "legacy-pro"}]}
+        with self.psycopg.connect(backend.DATABASE_URL, autocommit=True) as connection:
+            connection.execute("CREATE TABLE click_beleza_state (id SMALLINT PRIMARY KEY, payload JSONB NOT NULL)")
+            connection.execute("INSERT INTO click_beleza_state VALUES (1, %s::jsonb)", (json.dumps(legacy),))
+        backend.ensure_schema()
+        data = backend.load_data()
+        self.assertEqual([p["id"] for p in data["professionals"]], ["legacy-pro"])
+        self.assertEqual(data["bookings"][0]["id"], "L1")
+        with self.psycopg.connect(backend.DATABASE_URL) as connection:
+            self.assertIsNotNone(connection.execute("SELECT to_regclass('click_beleza_state_legacy')").fetchone()[0])
+            self.assertIsNone(connection.execute("SELECT to_regclass('click_beleza_state')").fetchone()[0])
+        backend._SCHEMA_READY.clear()
+        backend.ensure_schema()
+        self.assertEqual(len(backend.load_data()["professionals"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
