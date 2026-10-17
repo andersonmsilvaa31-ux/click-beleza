@@ -258,3 +258,5 @@ clareza qualquer comissão ou cobrança ao cliente e ao profissional.
 - Cabeçalhos: CSP, HSTS, Permissions-Policy, COOP/CORP. Limite de requisições por IP. Endpoints /healthz e /readyz. Logs em JSON. Encerramento limpo por SIGTERM.
 - Deploy: Dockerfile, docker-compose.yml (PostgreSQL, app, Caddy com HTTPS automático, backup diário com retenção de 14 dias), Caddyfile e .env.example. CI em .github/workflows/ci.yml.
 - Subir: copie .env.example para .env, preencha SITE_DOMAIN e POSTGRES_PASSWORD e rode docker compose up -d --build.
+
+- Estáticos com ETag, gzip e revalidação (304); suporte a HEAD e OPTIONS; cabeçalho Server sem versão. Verificação do banco: python scripts/check_db.py (IDs duplicados, referências órfãs, faixas x agendamentos).

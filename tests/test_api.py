@@ -93,6 +93,24 @@ class ApiIntegrationTests(unittest.TestCase):
             status, _ = self.post_json("/api/privacy/requests", {"type": "acesso", "name": "Ana", "contact": "ana@example.com", "message": "Quero acessar meus dados."})
         self.assertEqual(status, 429)
 
+    def test_static_assets_use_etag_gzip_head_and_options(self):
+        request = urllib.request.Request(self.base_url + "/app.js", headers={"Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.headers["Content-Encoding"], "gzip")
+            etag = response.headers["ETag"]
+            self.assertNotIn("Python", response.headers.get("Server", ""))
+        again = urllib.request.Request(self.base_url + "/app.js", headers={"If-None-Match": etag})
+        with self.assertRaises(urllib.error.HTTPError) as cached:
+            urllib.request.urlopen(again, timeout=5)
+        self.assertEqual(cached.exception.code, 304)
+        head = urllib.request.Request(self.base_url + "/style.css", method="HEAD")
+        with urllib.request.urlopen(head, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"")
+        options = urllib.request.Request(self.base_url + "/api/bookings", method="OPTIONS")
+        with urllib.request.urlopen(options, timeout=5) as response:
+            self.assertEqual(response.status, 204)
+
     def test_security_headers_health_and_rate_limit(self):
         with urllib.request.urlopen(self.base_url + "/", timeout=5) as response:
             self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])

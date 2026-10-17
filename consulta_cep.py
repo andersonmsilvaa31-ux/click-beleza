@@ -1,6 +1,7 @@
 import json
 import base64
 import binascii
+import gzip
 import hashlib
 import hmac
 import math
@@ -34,6 +35,7 @@ COOKIE_FLAGS = "; Secure" if COOKIE_SECURE else ""
 RATE_LIMIT_PER_MINUTE = int(os.environ.get("CLICK_BELEZA_RATE_LIMIT", "240"))
 RATE_WINDOW_SECONDS = 60
 RATE_HITS = {}
+COMPRESSIBLE_TYPES = {"text/html", "text/css", "text/javascript", "image/svg+xml"}
 PRIVACY_REQUEST_TYPES = {"acesso", "correcao", "exclusao", "reclamacao"}
 RATE_LOCK = threading.Lock()
 CONTENT_SECURITY_POLICY = (
@@ -758,8 +760,10 @@ def rate_limited(key, limit, window=RATE_WINDOW_SECONDS):
 
 class AppHandler(BaseHTTPRequestHandler):
     timeout = 30
+    server_version = "ClickBeleza"
+    sys_version = ""
 
-    def _security_headers(self):
+    def _security_headers(self, cache_control="no-store"):
         self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
@@ -767,7 +771,7 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         if COOKIE_SECURE:
             self.send_header("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 
@@ -1088,14 +1092,58 @@ class AppHandler(BaseHTTPRequestHandler):
         except RuntimeError as error:
             self._json(500, {"error": str(error)})
 
-    def _serve_static(self, path):
+    def _serve_static(self, path, head_only=False):
         filename, content_type = STATIC_FILES[path]
         try:
             content = (APP_DIR / filename).read_bytes()
         except OSError:
             self._send(500, "text/plain; charset=utf-8", f"Não foi possível abrir {filename}.")
             return
-        self._send(200, content_type, content)
+        etag = '"' + hashlib.sha256(content).hexdigest()[:20] + '"'
+        compress = (
+            "gzip" in self.headers.get("Accept-Encoding", "")
+            and content_type.split(";")[0] in COMPRESSIBLE_TYPES
+            and len(content) > 512
+        )
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self._security_headers("no-cache")
+            self.end_headers()
+            return
+        body = gzip.compress(content, compresslevel=6, mtime=0) if compress else content
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Vary", "Accept-Encoding")
+        if compress:
+            self.send_header("Content-Encoding", "gzip")
+        self._security_headers("no-cache")
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(body)
+
+    def do_HEAD(self):
+        path = urlsplit(self.path).path
+        if path in STATIC_FILES:
+            self._serve_static(path, head_only=True)
+        elif path in {"/healthz", "/readyz"}:
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self._security_headers()
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Allow", "GET, HEAD, POST, PUT, PATCH, OPTIONS")
+        self.send_header("Content-Length", "0")
+        self._security_headers()
+        self.end_headers()
 
     def _lookup_cep(self, raw_cep):
         try:
