@@ -225,6 +225,25 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(self.authenticated_request("/api/professional/payments/disconnect", "POST", {})[0], 200)
             self.assertFalse(self.authenticated_request("/api/professional/payments")[1]["connected"])
 
+    def test_admin_overview_includes_financial_balance(self):
+        self.create_user("admin")
+        self.assertEqual(self.authenticated_request("/api/auth/login", "POST", {"identifier": "admin@example.com", "password": "test-password-123"})[0], 200)
+        professional = backend.load_data()["professionals"][0]
+        service = professional["services"][0]
+        day = (date.today() + timedelta(days=2)).isoformat()
+        status, created = self.post_json("/api/bookings", {
+            "professionalId": professional["id"], "customerName": "Ana", "customerPhone": "11999999999",
+            "date": day, "time": "10:00", "serviceName": service["name"], "price": service["price"]})
+        self.assertEqual(status, 201)
+        finance = self.authenticated_request("/api/admin/overview")[1]["finance"]
+        self.assertEqual(finance["orders"]["open"], 1)
+        self.assertEqual(finance["orders"]["openValue"], float(service["price"]))
+        self.assertEqual(finance["payments"]["paidGross"], 0)
+        self.assertEqual(finance["feePercent"], 10.0)
+        row = next(item for item in finance["professionals"] if item["id"] == professional["id"])
+        self.assertEqual(row["orders"], 1)
+        self.assertEqual(self.get_json("/api/admin/overview")[0], 401)
+
     def test_static_assets_use_etag_gzip_head_and_options(self):
         request = urllib.request.Request(self.base_url + "/app.js", headers={"Accept-Encoding": "gzip"})
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -615,7 +634,7 @@ class ApiIntegrationTests(unittest.TestCase):
         status, overview = self.authenticated_request("/api/admin/overview")
 
         self.assertEqual(status, 200)
-        self.assertEqual(set(overview), {"professionals", "bookings", "chats", "partners", "users", "clients", "privacyRequests"})
+        self.assertEqual(set(overview), {"professionals", "bookings", "chats", "partners", "users", "clients", "privacyRequests", "finance"})
         self.assertTrue(overview["professionals"])
         self.assertNotIn("passwordHash", overview["users"][0])
         self.assertEqual(len(overview["clients"]), 1)

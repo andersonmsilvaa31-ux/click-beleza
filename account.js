@@ -318,9 +318,47 @@ function initAdminDashboard() {
   const clientList = document.getElementById("admin-client-list");
   const privacyList = document.getElementById("admin-privacy-list");
   const refreshButton = document.getElementById("admin-refresh");
+  const financeBody = document.getElementById("admin-finance-body");
+  const tabLinks = [...document.querySelectorAll(".admin-tabs a")];
+  const tabSections = [...root.querySelectorAll(".admin-section")];
+  const accessGrid = root.querySelector(".access-level-grid");
   let overview;
 
+  function showTab() {
+    const wanted = location.hash.slice(1);
+    const active = tabSections.some(section => section.id === wanted) ? wanted : "admin-overview";
+    tabSections.forEach(section => { section.hidden = section.id !== active; });
+    if (accessGrid) accessGrid.hidden = active !== "admin-overview";
+    tabLinks.forEach(link => {
+      const current = link.getAttribute("href") === `#${active}`;
+      link.classList.toggle("active", current);
+      link.setAttribute("role", "tab");
+      link.setAttribute("aria-selected", String(current));
+    });
+  }
+  window.addEventListener("hashchange", showTab);
+  showTab();
+
+  function renderFinance() {
+    const f = overview.finance;
+    const card = (value, label, hint = "") => `<div class="admin-stat"><strong>${value}</strong><span>${escapeHtml(label)}</span>${hint ? `<small>${escapeHtml(hint)}</small>` : ""}</div>`;
+    const demoNote = f.onlinePayments ? "" : '<p class="admin-section-note">O pagamento online ainda não está ativo: os valores de "Pagamentos confirmados" ficam zerados e a comissão abaixo é apenas projetada sobre pedidos concluídos.</p>';
+    const rows = f.professionals.map(p => `<article class="admin-row"><div><h3>${escapeHtml(p.name)}${p.demo ? " · Demonstração" : ""}</h3><p>${p.orders} pedidos · ${p.completed} concluídos · ${money(p.grossCompleted)} em serviços concluídos</p><small>Pago online: ${money(p.paidGross)} · Comissão retida: ${money(p.platformFee)} · Caixa manual: +${money(p.manualIn)} / −${money(p.manualOut)}</small></div></article>`).join("");
+    financeBody.innerHTML = `${demoNote}
+      <h3 class="finance-block-title">Receita da plataforma</h3>
+      <div class="admin-stat-grid finance-grid">${card(money(f.platformRevenue), "Receita total", "comissões + anúncios mensais")}${card(money(f.payments.platformFee), "Comissões retidas", `${f.feePercent}% sobre pagamentos confirmados`)}${card(money(f.ads.monthlyRevenue), "Anúncios (mensal)", `${f.ads.active} ativos · ${f.ads.clicks} cliques`)}${card(money(f.projectedFee), "Comissão projetada", "sobre pedidos concluídos")}</div>
+      <h3 class="finance-block-title">Pedidos e valores</h3>
+      <div class="admin-stat-grid finance-grid">${card(money(f.orders.completedValue), "Concluídos", `${f.orders.completed} pedidos`)}${card(money(f.orders.openValue), "Em aberto", `${f.orders.open} pedidos`)}${card(money(f.orders.cancelledValue), "Cancelados", `${f.orders.cancelled} pedidos`)}${card(String(f.orders.total), "Total de pedidos")}</div>
+      <h3 class="finance-block-title">Pagamentos online</h3>
+      <div class="admin-stat-grid finance-grid">${card(money(f.payments.paidGross), "Recebido (bruto)", `${f.payments.paidCount} pagamentos`)}${card(money(f.payments.professionalNet), "Líquido dos profissionais")}${card(money(f.payments.refundedValue), "Estornado", `${f.payments.refundedCount} estornos`)}${card(String(f.payments.pendingCount), "Aguardando pagamento")}</div>
+      <h3 class="finance-block-title">Caixa manual dos profissionais</h3>
+      <div class="admin-stat-grid finance-grid">${card(money(f.manual.in), "Entradas lançadas")}${card(money(f.manual.out), "Saídas lançadas")}${card(money(f.manual.balance), "Saldo lançado")}</div>
+      <h3 class="finance-block-title">Por profissional</h3>
+      <div class="admin-list">${rows || '<p class="empty-state">Sem profissionais.</p>'}</div>`;
+  }
+
   function render() {
+    renderFinance();
     stats.innerHTML = [
       ["Profissionais", overview.professionals.length],
       ["Agendamentos", overview.bookings.length],

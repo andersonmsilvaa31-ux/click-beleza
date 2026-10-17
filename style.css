@@ -339,6 +339,12 @@ input:focus,select:focus,textarea:focus{border-color:var(--rose);box-shadow:0 0 
 .access-level-grid p{margin:0;color:#b3c2b8;font-size:12px}
 .admin-tabs a{border-color:#304438;background:#0b120d;color:#c9f3d4}
 .admin-tabs a:hover{border-color:var(--rose);background:#102419;color:var(--rose)}
+.admin-tabs a.active{border-color:var(--rose);background:var(--rose);color:#04110a}
+.admin-section[hidden],.access-level-grid[hidden]{display:none}
+.admin-shell .finance-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.admin-stat small{display:block;margin-top:4px;font-size:11px;opacity:.7}
+.finance-block-title{margin:22px 0 10px;font-size:15px}
+@media(max-width:760px){.admin-shell .finance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .admin-shell .admin-stat-grid{grid-template-columns:repeat(6,minmax(0,1fr))}
 .admin-shell .admin-stat strong{color:var(--rose)}
 .admin-shell .admin-status{color:#7bf0a3}

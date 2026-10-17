@@ -2164,6 +2164,71 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
         self._json(201, {"transaction": transaction})
 
+    def _admin_finance(self, data):
+        fee = payments.fee_percent()
+        money_of = lambda value: round(float(value or 0), 2)
+        bookings = data["bookings"]
+        paid = [b for b in bookings if b.get("paymentStatus") == "paid"]
+        refunded = [b for b in bookings if b.get("paymentStatus") == "refunded"]
+        completed = [b for b in bookings if b.get("status") == "concluido"]
+        open_orders = [b for b in bookings if b.get("status") in {"solicitado", "confirmado"}]
+        cancelled = [b for b in bookings if b.get("status") == "cancelado"]
+        partners = get_partners(data)
+        active_partners = [p for p in partners if p.get("status") != "paused"]
+        ad_monthly = sum(PARTNER_PLANS.get(p.get("plan"), PARTNER_PLANS["basico"])["price"] for p in active_partners)
+        manual_in = sum(money_of(t["amount"]) for t in data["financialTransactions"] if t.get("type") == "entrada")
+        manual_out = sum(money_of(t["amount"]) for t in data["financialTransactions"] if t.get("type") == "saida")
+        by_professional = {}
+        for professional in data["professionals"]:
+            by_professional[professional["id"]] = {
+                "id": professional["id"], "name": professional.get("name", ""), "demo": bool(professional.get("demo")),
+                "orders": 0, "completed": 0, "grossCompleted": 0.0, "paidGross": 0.0, "platformFee": 0.0,
+                "manualIn": 0.0, "manualOut": 0.0,
+            }
+        for booking in bookings:
+            row = by_professional.get(booking.get("professionalId"))
+            if not row:
+                continue
+            row["orders"] += 1
+            if booking.get("status") == "concluido":
+                row["completed"] += 1
+                row["grossCompleted"] += money_of(booking.get("price"))
+            if booking.get("paymentStatus") == "paid":
+                row["paidGross"] += money_of(booking.get("price"))
+                row["platformFee"] += money_of(booking.get("platformFee"))
+        for item in data["financialTransactions"]:
+            row = by_professional.get(item.get("professionalId"))
+            if row:
+                row["manualIn" if item.get("type") == "entrada" else "manualOut"] += money_of(item.get("amount"))
+        for row in by_professional.values():
+            for key in ("grossCompleted", "paidGross", "platformFee", "manualIn", "manualOut"):
+                row[key] = round(row[key], 2)
+        paid_gross = round(sum(money_of(b.get("price")) for b in paid), 2)
+        platform_fee = round(sum(money_of(b.get("platformFee")) for b in paid), 2)
+        return {
+            "feePercent": fee, "onlinePayments": payments.enabled(),
+            "orders": {
+                "total": len(bookings), "open": len(open_orders), "completed": len(completed), "cancelled": len(cancelled),
+                "openValue": round(sum(money_of(b.get("price")) for b in open_orders), 2),
+                "completedValue": round(sum(money_of(b.get("price")) for b in completed), 2),
+                "cancelledValue": round(sum(money_of(b.get("price")) for b in cancelled), 2),
+            },
+            "payments": {
+                "paidCount": len(paid), "paidGross": paid_gross, "platformFee": platform_fee,
+                "professionalNet": round(paid_gross - platform_fee, 2),
+                "refundedCount": len(refunded), "refundedValue": round(sum(money_of(b.get("price")) for b in refunded), 2),
+                "pendingCount": len([b for b in bookings if b.get("paymentStatus") == "pending"]),
+            },
+            "projectedFee": round(sum(money_of(b.get("price")) for b in completed) * fee / 100, 2),
+            "ads": {
+                "active": len(active_partners), "paused": len(partners) - len(active_partners),
+                "monthlyRevenue": ad_monthly, "clicks": sum(int(p.get("clicks") or 0) for p in partners),
+            },
+            "manual": {"in": round(manual_in, 2), "out": round(manual_out, 2), "balance": round(manual_in - manual_out, 2)},
+            "platformRevenue": round(platform_fee + ad_monthly, 2),
+            "professionals": sorted(by_professional.values(), key=lambda r: (-r["grossCompleted"], r["name"].casefold())),
+        }
+
     def _admin_overview(self):
         if not self._require_user({"admin"}):
             return
@@ -2218,6 +2283,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "users": [public_user(item) for item in data["users"]],
             "clients": sorted(clients_by_key.values(), key=lambda item: item["name"].casefold()),
             "privacyRequests": sorted(data["privacyRequests"], key=lambda item: item["createdAt"], reverse=True),
+            "finance": self._admin_finance(data),
         })
 
     def _create_privacy_request(self, data):
