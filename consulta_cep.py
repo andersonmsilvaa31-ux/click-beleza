@@ -971,7 +971,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if parsed.path in {"/healthz", "/readyz"}:
             self._health(parsed.path == "/readyz")
             return
-        if self._throttled():
+        if parsed.path.startswith("/api/") and self._throttled():
             return
         if parsed.path == "/api/auth/me":
             self._auth_me()

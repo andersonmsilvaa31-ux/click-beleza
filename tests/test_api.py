@@ -109,6 +109,8 @@ class ApiIntegrationTests(unittest.TestCase):
             backend.RATE_LIMIT_PER_MINUTE = original
         self.assertIn(429, codes)
         self.assertEqual(self.get_json("/healthz")[0], 200)
+        with urllib.request.urlopen(self.base_url + "/style.css", timeout=5) as response:
+            self.assertEqual(response.status, 200)
 
     def get_json(self, path):
         try:
