@@ -93,6 +93,78 @@ class ApiIntegrationTests(unittest.TestCase):
             status, _ = self.post_json("/api/privacy/requests", {"type": "acesso", "name": "Ana", "contact": "ana@example.com", "message": "Quero acessar meus dados."})
         self.assertEqual(status, 429)
 
+    def test_mercadopago_checkout_webhook_signature_and_refund(self):
+        import hashlib, hmac, time as time_module
+        import payments
+        env = {"CLICK_BELEZA_MP_ACCESS_TOKEN": "TEST-token", "CLICK_BELEZA_MP_WEBHOOK_SECRET": "segredo",
+               "CLICK_BELEZA_PUBLIC_URL": "https://exemplo.com.br", "CLICK_BELEZA_FEE_PERCENT": "10"}
+        calls = []
+        remote = {"status": "approved", "amount": None}
+
+        def fake_http(method, path, token, payload=None, idempotency_key=None):
+            calls.append((method, path, token, payload, idempotency_key))
+            if path == "/checkout/preferences":
+                return {"id": "pref-1", "init_point": "https://mp.test/pay/pref-1"}
+            if method == "GET":
+                return {"id": 555, "status": remote["status"], "transaction_amount": remote["amount"],
+                        "currency_id": "BRL", "external_reference": booking_id, "payment_type_id": "bank_transfer"}
+            return {"id": 1}
+
+        def webhook(signed=True):
+            ts = str(int(time_module.time()))
+            manifest = f"id:555;request-id:req-1;ts:{ts};"
+            v1 = hmac.new(b"segredo", manifest.encode(), hashlib.sha256).hexdigest() if signed else "0" * 64
+            request = urllib.request.Request(
+                self.base_url + "/api/payments/webhook?data.id=555", method="POST",
+                data=json.dumps({"type": "payment", "data": {"id": "555"}}).encode(),
+                headers={"Content-Type": "application/json", "x-signature": f"ts={ts},v1={v1}", "x-request-id": "req-1"})
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return response.status
+            except urllib.error.HTTPError as error:
+                return error.code
+
+        with patch.dict(os.environ, env), patch.object(payments, "http", fake_http):
+            professional = backend.load_data()["professionals"][0]
+            service = professional["services"][0]
+            day = (date.today() + timedelta(days=2)).isoformat()
+            status, created = self.post_json("/api/bookings", {
+                "professionalId": professional["id"], "customerName": "Ana", "customerPhone": "11999999999",
+                "date": day, "time": "10:00", "serviceName": service["name"], "price": service["price"]})
+            self.assertEqual(status, 201)
+            booking_id = created["booking"]["id"]
+            token = created["customerToken"]
+            remote["amount"] = service["price"]
+            self.assertEqual(created["booking"]["paymentMode"], "mercadopago")
+            self.assertEqual(created["booking"]["paymentStatus"], "pending")
+            # sem o código privado não há cobrança
+            self.assertEqual(self.post_json(f"/api/bookings/{booking_id}/checkout", {})[0], 401)
+            status, body = self.post_json(f"/api/bookings/{booking_id}/checkout", {"customerToken": token})
+            self.assertEqual((status, body["checkoutUrl"]), (200, "https://mp.test/pay/pref-1"))
+            preference = calls[0][3]
+            self.assertEqual(preference["external_reference"], booking_id)
+            self.assertEqual(preference["items"][0]["unit_price"], float(service["price"]))
+            # webhook falso ou sem assinatura é recusado e não confirma nada
+            self.assertEqual(webhook(signed=False), 401)
+            self.assertEqual(backend.load_data()["bookings"][0]["paymentStatus"], "pending")
+            # valor divergente não confirma
+            remote["amount"] = 1
+            self.assertEqual(webhook(), 200)
+            self.assertEqual(backend.load_data()["bookings"][0]["paymentStatus"], "pending")
+            remote["amount"] = service["price"]
+            self.assertEqual(webhook(), 200)
+            self.assertEqual(webhook(), 200)  # idempotente
+            stored = backend.load_data()["bookings"][0]
+            self.assertEqual((stored["paymentStatus"], stored["paymentMethod"], stored["paymentId"]), ("paid", "pix", "555"))
+            self.assertEqual(self.post_json(f"/api/bookings/{booking_id}/checkout", {"customerToken": token})[0], 409)
+            # cancelar um pedido pago gera estorno
+            status, body = self.authenticated_request(f"/api/bookings/{booking_id}/status", "PATCH",
+                                             {"status": "cancelado", "customerToken": token})
+            self.assertEqual(status, 200)
+            self.assertEqual(body["booking"]["paymentStatus"], "refunded")
+            self.assertTrue(any(c[1] == "/v1/payments/555/refunds" for c in calls))
+        self.assertFalse(payments.verify_signature({"x-signature": "ts=1,v1=aa"}, "1", secret="s"))
+
     def test_static_assets_use_etag_gzip_head_and_options(self):
         request = urllib.request.Request(self.base_url + "/app.js", headers={"Accept-Encoding": "gzip"})
         with urllib.request.urlopen(request, timeout=5) as response:

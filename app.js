@@ -79,24 +79,30 @@ function bookingPaymentSummary(booking) {
 
 function bookingPaymentCheckout(booking) {
   const dateLabel = new Date(`${booking.date}T12:00:00`).toLocaleDateString("pt-BR");
-  return `<div class="checkout-progress" aria-label="Etapas do pedido">
-      <span class="checkout-step complete">1 · Pedido enviado</span><span class="checkout-step active">2 · Pagamento</span>
-    </div>
-    <h3 class="checkout-title" id="checkout-heading" tabindex="-1">Finalize seu pedido</h3>
-    <div class="order-summary"><p class="eyebrow">RESUMO DO PEDIDO</p><strong>${escapeHtml(booking.professionalName)}</strong>
-      <p>${escapeHtml(booking.serviceName)} · ${dateLabel} às ${escapeHtml(booking.time)}</p>
-      <p class="order-total">Total demonstrativo <strong>${money(booking.price)}</strong></p>
-      <small>Código do pedido: ${escapeHtml(booking.id)}</small>
-    </div>
-    <div class="customer-access-code"><span>CÓDIGO PRIVADO DO PEDIDO</span><code>${escapeHtml(booking.customerToken)}</code><small>Guarde este código para consultar, cancelar ou avaliar somente este pedido.</small><a href="/customer-orders.html">Acompanhar meu pedido</a></div>
-    <fieldset class="payment-choice"><legend>Escolha uma forma de pagamento</legend>
+  const real = booking.paymentMode === "mercadopago";
+  const paymentBlock = real
+    ? `<fieldset class="payment-choice"><legend>Pagamento seguro</legend>
+      <p class="payment-disclaimer">Você será levado ao Mercado Pago para pagar com Pix ou cartão. O Click Beleza não recebe nem guarda dados do seu cartão. O pedido só é confirmado após a aprovação do pagamento.</p></fieldset>
+    <button class="button button-primary button-wide" type="submit">Pagar ${money(booking.price)} com Mercado Pago</button>`
+    : `<fieldset class="payment-choice"><legend>Escolha uma forma de pagamento</legend>
       <p class="payment-disclaimer">O recebedor previsto seria Click Beleza, mas este checkout é apenas demonstrativo: nenhuma cobrança, transferência ou repasse será realizado. Não informe dados de cartão.</p>
       <div class="payment-methods">
         <label class="payment-method-option"><input type="radio" name="paymentMethod" value="pix" required checked><span><strong>Pix</strong><small>Simulação, sem QR Code ou transferência real</small></span></label>
         <label class="payment-method-option"><input type="radio" name="paymentMethod" value="cartao" required><span><strong>Cartão</strong><small>Simulação, sem inserir dados do cartão</small></span></label>
       </div>
     </fieldset>
-    <button class="button button-primary button-wide" type="submit">Concluir etapa demonstrativa</button>
+    <button class="button button-primary button-wide" type="submit">Concluir etapa demonstrativa</button>`;
+  return `<div class="checkout-progress" aria-label="Etapas do pedido">
+      <span class="checkout-step complete">1 · Pedido enviado</span><span class="checkout-step active">2 · Pagamento</span>
+    </div>
+    <h3 class="checkout-title" id="checkout-heading" tabindex="-1">Finalize seu pedido</h3>
+    <div class="order-summary"><p class="eyebrow">RESUMO DO PEDIDO</p><strong>${escapeHtml(booking.professionalName)}</strong>
+      <p>${escapeHtml(booking.serviceName)} · ${dateLabel} às ${escapeHtml(booking.time)}</p>
+      <p class="order-total">${real ? "Total" : "Total demonstrativo"} <strong>${money(booking.price)}</strong></p>
+      <small>Código do pedido: ${escapeHtml(booking.id)}</small>
+    </div>
+    <div class="customer-access-code"><span>CÓDIGO PRIVADO DO PEDIDO</span><code>${escapeHtml(booking.customerToken)}</code><small>Guarde este código para consultar, cancelar ou avaliar somente este pedido.</small><a href="/customer-orders.html">Acompanhar meu pedido</a></div>
+    ${paymentBlock}
     <button class="button button-outline button-wide" type="button" data-cancel-order>Cancelar pedido</button>
     <p class="form-feedback" id="booking-feedback" aria-live="polite"></p>`;
 }
@@ -457,6 +463,15 @@ async function initProfessional() {
         const button = form.querySelector('[type="submit"]');
         button.disabled = true;
         try {
+          if (currentBooking && currentBooking.paymentMode === "mercadopago") {
+            feedback.textContent = "Abrindo o pagamento seguro…";
+            sessionStorage.setItem("cb-order", JSON.stringify({ id: currentBooking.id, token: currentBooking.customerToken }));
+            const { checkoutUrl } = await chamarAPI(`agendamentos/${encodeURIComponent(currentBooking.id)}/checkout`, {
+              method: "POST", body: JSON.stringify({ customerToken: currentBooking.customerToken })
+            });
+            window.location.assign(checkoutUrl);
+            return;
+          }
           if (currentBooking) {
             const paymentMethod = form.querySelector('[name="paymentMethod"]:checked')?.value;
             if (!paymentMethod) {

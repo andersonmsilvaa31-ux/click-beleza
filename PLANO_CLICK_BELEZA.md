@@ -263,3 +263,7 @@ clareza qualquer comissão ou cobrança ao cliente e ao profissional.
 - Subir: copie .env.example para .env, preencha SITE_DOMAIN e POSTGRES_PASSWORD e rode docker compose up -d --build.
 
 - Estáticos com ETag, gzip e revalidação (304); suporte a HEAD e OPTIONS; cabeçalho Server sem versão. Verificação do banco: python scripts/check_db.py (IDs duplicados, referências órfãs, faixas x agendamentos).
+
+## Pagamentos reais (Mercado Pago)
+
+O modulo payments.py cria a cobranca (Checkout Pro), valida o webhook por assinatura HMAC, confirma consultando a API (valor e referencia conferidos) e estorna ao cancelar pedido pago. Habilite com CLICK_BELEZA_MP_ACCESS_TOKEN, CLICK_BELEZA_MP_WEBHOOK_SECRET e CLICK_BELEZA_PUBLIC_URL (https). Sem elas o checkout segue demonstrativo. Para repasse automatico (split) cada profissional precisa autorizar a conta via OAuth do Mercado Pago (token em mpSellerToken no usuario, ainda sem tela de onboarding); sem isso o valor entra na conta da plataforma e a comissao fica em platformFee. Configure no painel do Mercado Pago a notificacao em /api/payments/webhook. Prazo e regra de cancelamento/estorno dependem de definicao comercial.

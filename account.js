@@ -58,11 +58,13 @@ function initCustomerOrdersPage() {
   function render() {
     const date = new Date(`${booking.date}T12:00:00`).toLocaleDateString("pt-BR");
     const canCancel = ["solicitado", "confirmado"].includes(booking.status);
-    const canPay = booking.paymentStatus === "demo_pending" && canCancel;
+    const canPay = ["demo_pending", "pending", "failed"].includes(booking.paymentStatus) && canCancel;
+    const real = booking.paymentMode === "mercadopago";
+    const paymentLabels = { paid: "Pago", pending: "Aguardando pagamento", failed: "Pagamento recusado", refunded: "Estornado", refund_failed: "Estorno em análise", demo_completed: "Etapa simulada", demo_pending: "Etapa demonstrativa pendente" };
     resultBox.innerHTML = `<div class="admin-section-heading"><div><p class="eyebrow">PEDIDO ${escapeHtml(booking.id)}</p><h2>${escapeHtml(booking.serviceName)}</h2></div><span class="admin-status ${booking.status === "cancelado" ? "cancelado" : ""}">${escapeHtml(booking.status)}</span></div>
-      <div class="customer-order-details"><p><span>Profissional</span><strong>${escapeHtml(booking.professionalName)}</strong></p><p><span>Data e horário</span><strong>${date} às ${escapeHtml(booking.time)}</strong></p><p><span>Valor demonstrativo</span><strong>${money(booking.price)}</strong></p><p><span>Pagamento</span><strong>${escapeHtml(booking.paymentStatus === "demo_completed" ? "Etapa simulada" : booking.paymentStatus === "demo_pending" ? "Etapa demonstrativa pendente" : "Não informado")}</strong></p></div>
-      <p class="customer-order-note">${escapeHtml(booking.status === "cancelado" ? "Este pedido foi cancelado." : booking.status === "concluido" ? booking.review ? "Avaliação registrada. Obrigado pelo retorno!" : "Atendimento concluído. Você pode deixar uma avaliação." : "Nenhuma cobrança real foi realizada; este é um pedido demonstrativo.")}</p>
-      <div class="account-actions">${canPay ? '<button class="button button-primary" type="button" data-customer-action="pay">Concluir etapa demonstrativa</button>' : ""}${canCancel ? '<button class="button button-outline" type="button" data-customer-action="cancel">Cancelar meu pedido</button>' : ""}${booking.status === "concluido" && !booking.review ? `<form class="customer-review-form"><label>Sua nota<select name="rating" required><option value="">Selecione</option><option value="5">5 · Excelente</option><option value="4">4 · Muito bom</option><option value="3">3 · Bom</option><option value="2">2 · Regular</option><option value="1">1 · Precisa melhorar</option></select></label><label>Comentário (opcional)<input name="comment" maxlength="500" placeholder="Conte como foi o atendimento"></label><button class="button button-primary" type="submit">Enviar avaliação</button></form>` : ""}</div>`;
+      <div class="customer-order-details"><p><span>Profissional</span><strong>${escapeHtml(booking.professionalName)}</strong></p><p><span>Data e horário</span><strong>${date} às ${escapeHtml(booking.time)}</strong></p><p><span>${real ? "Valor" : "Valor demonstrativo"}</span><strong>${money(booking.price)}</strong></p><p><span>Pagamento</span><strong>${escapeHtml(paymentLabels[booking.paymentStatus] || "Não informado")}</strong></p></div>
+      <p class="customer-order-note">${escapeHtml(booking.status === "cancelado" ? (booking.paymentStatus === "refunded" ? "Pedido cancelado e pagamento estornado." : "Este pedido foi cancelado.") : booking.status === "concluido" ? booking.review ? "Avaliação registrada. Obrigado pelo retorno!" : "Atendimento concluído. Você pode deixar uma avaliação." : real ? "O pedido é confirmado após a aprovação do pagamento." : "Nenhuma cobrança real foi realizada; este é um pedido demonstrativo.")}</p>
+      <div class="account-actions">${canPay ? `<button class="button button-primary" type="button" data-customer-action="pay">${real ? "Pagar com Mercado Pago" : "Concluir etapa demonstrativa"}</button>` : ""}${canCancel ? '<button class="button button-outline" type="button" data-customer-action="cancel">Cancelar meu pedido</button>' : ""}${booking.status === "concluido" && !booking.review ? `<form class="customer-review-form"><label>Sua nota<select name="rating" required><option value="">Selecione</option><option value="5">5 · Excelente</option><option value="4">4 · Muito bom</option><option value="3">3 · Bom</option><option value="2">2 · Regular</option><option value="1">1 · Precisa melhorar</option></select></label><label>Comentário (opcional)<input name="comment" maxlength="500" placeholder="Conte como foi o atendimento"></label><button class="button button-primary" type="submit">Enviar avaliação</button></form>` : ""}</div>`;
     resultBox.hidden = false;
   }
 
@@ -89,6 +91,18 @@ function initCustomerOrdersPage() {
     customerToken = form.elements.customerToken.value.trim();
     await loadOrder();
   });
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("cb-order") || "null");
+    const wanted = new URLSearchParams(window.location.search).get("pedido");
+    if (saved && saved.id === wanted) {
+      form.elements.bookingId.value = saved.id;
+      form.elements.customerToken.value = saved.token;
+      customerToken = saved.token;
+      loadOrder();
+    }
+  } catch (error) {
+    sessionStorage.removeItem("cb-order");
+  }
   resultBox.addEventListener("click", async event => {
     const button = event.target.closest("button[data-customer-action]");
     if (!button || !booking) return;
@@ -99,6 +113,13 @@ function initCustomerOrdersPage() {
           method: "PATCH",
           body: JSON.stringify({ status: "cancelado", customerToken })
         }));
+      } else if (booking.paymentMode === "mercadopago") {
+        const { checkoutUrl } = await chamarAPI(`bookings/${encodeURIComponent(booking.id)}/checkout`, {
+          method: "POST",
+          body: JSON.stringify({ customerToken })
+        });
+        window.location.assign(checkoutUrl);
+        return;
       } else {
         ({ booking } = await chamarAPI(`bookings/${encodeURIComponent(booking.id)}/payment`, {
           method: "POST",

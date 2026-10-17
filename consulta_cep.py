@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 import psycopg
+import payments
 from psycopg.types.json import Jsonb
 
 APP_DIR = Path(__file__).resolve().parent
@@ -1106,6 +1107,10 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._create_booking(data)
             elif re.fullmatch(r"/api/bookings/[^/]+/payment", parsed.path):
                 self._simulate_booking_payment(parsed.path.split("/")[-2], data)
+            elif re.fullmatch(r"/api/bookings/[^/]+/checkout", parsed.path):
+                self._create_checkout(parsed.path.split("/")[-2], data)
+            elif parsed.path == "/api/payments/webhook":
+                self._payment_webhook(parsed, data)
             elif re.fullmatch(r"/api/bookings/[^/]+/access", parsed.path):
                 self._access_booking(parsed.path.split("/")[-2], data)
             elif parsed.path == "/api/chats":
@@ -1758,7 +1763,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 "date": data["date"], "time": data["time"], "serviceName": data["serviceName"].strip()[:100],
                 "duration": duration,
                 "price": price, "status": "solicitado", "review": False,
-                "paymentMode": "demo", "paymentStatus": "demo_pending",
+                "paymentMode": "mercadopago" if payments.enabled() else "demo",
+                "paymentStatus": "pending" if payments.enabled() else "demo_pending",
                 "paymentDestination": "clickbeleza", "paymentMethod": None,
             }
             customer_token = secrets.token_urlsafe(32)
@@ -1800,6 +1806,117 @@ class AppHandler(BaseHTTPRequestHandler):
             if not self._authorize_booking(booking, data.get("customerToken")):
                 return
             self._json(200, {"booking": public_booking(booking)})
+
+    def _seller_tokens(self, stored, professional_id=None):
+        return [
+            user["mpSellerToken"] for user in stored["users"]
+            if user.get("mpSellerToken") and (professional_id is None or user.get("professionalId") == professional_id)
+        ]
+
+    def _create_checkout(self, booking_id, data):
+        if not payments.enabled():
+            self._json(503, {"error": "O pagamento online ainda não está habilitado neste ambiente."})
+            return
+        with DATA_LOCK:
+            stored = load_data()
+            booking = next((item for item in stored["bookings"] if item["id"] == booking_id), None)
+            if not booking:
+                self._json(404, {"error": "Pedido de agendamento não encontrado."})
+                return
+            if not self._authorize_booking(booking, data.get("customerToken")):
+                return
+            if booking.get("paymentMode") != "mercadopago":
+                self._json(409, {"error": "Este pedido não usa pagamento online."})
+                return
+            if booking.get("status") not in {"solicitado", "confirmado"} or booking.get("paymentStatus") not in {"pending", "failed"}:
+                self._json(409, {"error": "Este pedido não aceita uma nova cobrança."})
+                return
+            seller = next(iter(self._seller_tokens(stored, booking["professionalId"])), None)
+            snapshot = dict(booking)
+        try:
+            preference = payments.create_preference(snapshot, seller)
+        except payments.PaymentError as error:
+            self._json(502, {"error": str(error)})
+            return
+        if not preference.get("url"):
+            self._json(502, {"error": "O Mercado Pago não devolveu o link de pagamento."})
+            return
+        with DATA_LOCK:
+            stored = load_data()
+            current = next((item for item in stored["bookings"] if item["id"] == booking_id), None)
+            if current:
+                current["paymentPreferenceId"] = preference["id"]
+                current["paymentSplit"] = preference["split"]
+                save_data(stored)
+        self._json(200, {"checkoutUrl": preference["url"]})
+
+    def _payment_webhook(self, parsed, data):
+        query = parse_qs(parsed.query)
+        data_id = (query.get("data.id") or [None])[0] or (data.get("data") or {}).get("id")
+        headers = {"x-signature": self.headers.get("x-signature", ""), "x-request-id": self.headers.get("x-request-id", "")}
+        if not payments.enabled() or not payments.verify_signature(headers, data_id):
+            self._json(401, {"error": "Assinatura inválida."})
+            return
+        if data.get("type", "payment") != "payment":
+            self._json(200, {"ok": True})
+            return
+        with DATA_LOCK:
+            tokens = self._seller_tokens(load_data())
+        payment = None
+        for token in [None, *tokens]:
+            try:
+                payment = payments.fetch_payment(data_id, token)
+                break
+            except payments.PaymentError:
+                continue
+        if payment is None:
+            self._json(502, {"error": "Pagamento não localizado."})
+            return
+        with DATA_LOCK:
+            stored = load_data()
+            booking = next((item for item in stored["bookings"] if item["id"] == payment.get("external_reference")), None)
+            if not booking or booking.get("paymentMode") != "mercadopago":
+                self._json(200, {"ok": True})
+                return
+            amount_ok = math.isclose(float(payment.get("transaction_amount", 0)), float(booking["price"]), abs_tol=0.01)
+            status = payment.get("status")
+            if status == payments.APPROVED and amount_ok and payment.get("currency_id", "BRL") == "BRL":
+                if booking.get("paymentStatus") in {"pending", "failed"}:
+                    booking.update({
+                        "paymentStatus": "paid", "paymentId": str(payment.get("id")),
+                        "paymentMethod": "pix" if payment.get("payment_type_id") == "bank_transfer" else "cartao",
+                        "paidAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "platformFee": payments.marketplace_fee(float(booking["price"])),
+                    })
+                    save_data(stored)
+            elif status in {"refunded", "charged_back"} and booking.get("paymentStatus") in {"paid", "refund_failed"}:
+                booking["paymentStatus"] = "refunded"
+                save_data(stored)
+            elif status in {"rejected", "cancelled"} and booking.get("paymentStatus") == "pending":
+                booking["paymentStatus"] = "failed"
+                save_data(stored)
+        self._json(200, {"ok": True})
+
+    def _refund_if_paid(self, booking_id):
+        with DATA_LOCK:
+            stored = load_data()
+            booking = next((item for item in stored["bookings"] if item["id"] == booking_id), None)
+            if not booking or booking.get("paymentStatus") not in {"paid", "refund_failed"}:
+                return None
+            payment_id = booking.get("paymentId")
+            seller = next(iter(self._seller_tokens(stored, booking["professionalId"])), None) if booking.get("paymentSplit") else None
+        try:
+            payments.refund_payment(payment_id, booking_id, seller)
+            outcome = "refunded"
+        except payments.PaymentError:
+            outcome = "refund_failed"
+        with DATA_LOCK:
+            stored = load_data()
+            booking = next((item for item in stored["bookings"] if item["id"] == booking_id), None)
+            if booking:
+                booking["paymentStatus"] = outcome
+                save_data(stored)
+        return outcome
 
     def _simulate_booking_payment(self, booking_id, data):
         payment_method = data.get("paymentMethod")
@@ -2096,6 +2213,10 @@ class AppHandler(BaseHTTPRequestHandler):
             save_data(stored)
             if status == "cancelado":
                 release_booking_slots(booking["id"])
+        refund = self._refund_if_paid(booking["id"]) if status == "cancelado" else None
+        if refund:
+            with DATA_LOCK:
+                booking = next(item for item in load_data()["bookings"] if item["id"] == booking_id)
         self._json(200, {"booking": public_booking(booking)})
 
     def _create_review(self, booking_id, data):
