@@ -272,3 +272,5 @@ Repasse automatico: o profissional conecta a conta em Meu espaco > Receber pelo 
 
 ## Painel admin
 Abas por área (visão geral, financeiro, profissionais, clientes, agendamentos, conversas, anúncios, privacidade, contas) e balanço financeiro (comissões, mensalidades, pagamentos, caixa manual e resultado por profissional).
+
+Anúncios: somente o admin publica, renova (validade em meses) e pausa. Cada loja parceira tem conta própria (papel partner, /partner-dashboard.html) que vê apenas a validade do próprio anúncio. Anúncios vencidos saem do ar automaticamente.

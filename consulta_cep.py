@@ -106,6 +106,7 @@ STATIC_FILES = {
     "/customer-orders.html": ("customer-orders.html", "text/html; charset=utf-8"),
     "/admin.html": ("admin.html", "text/html; charset=utf-8"),
     "/professional-dashboard.html": ("professional-dashboard.html", "text/html; charset=utf-8"),
+    "/partner-dashboard.html": ("partner-dashboard.html", "text/html; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/account.js": ("account.js", "text/javascript; charset=utf-8"),
@@ -687,6 +688,35 @@ def public_partner(partner):
     return result
 
 
+def partner_validity(partner, today=None):
+    today = today or date.today()
+    try:
+        end = date.fromisoformat(partner.get("validUntil") or "")
+    except ValueError:
+        end = None
+    expired = end is not None and end < today
+    state = "paused" if partner.get("status") == "paused" else "expired" if expired else "active"
+    return {"state": state, "validUntil": end.isoformat() if end else None,
+            "daysLeft": (end - today).days if end else None}
+
+
+def add_months(start, months):
+    index = start.month - 1 + months
+    year, month = start.year + index // 12, index % 12 + 1
+    last_day = [31, 29 if year % 4 == 0 and (year % 100 or year % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+    return date(year, month, min(start.day, last_day))
+
+
+def parse_months(value):
+    try:
+        months = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("Informe a validade em meses (1 a 24).") from None
+    if not 1 <= months <= 24:
+        raise ValueError("Informe a validade em meses (1 a 24).")
+    return months
+
+
 def token_hash(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -759,6 +789,8 @@ def public_user(user, professional=None):
     }
     if professional is not None:
         result["professionalName"] = professional.get("name", "")
+    if user.get("partnerId"):
+        result["partnerId"] = user["partnerId"]
     return result
 
 
@@ -1075,8 +1107,8 @@ class AppHandler(BaseHTTPRequestHandler):
             self._get_chat(parsed.path.rsplit("/", 1)[-1], parse_qs(parsed.query).get("token", [""])[0])
         elif parsed.path == "/api/partners":
             self._list_partners(parse_qs(parsed.query))
-        elif parsed.path == "/api/partners/stats":
-            self._partner_stats(parse_qs(parsed.query).get("token", [""])[0])
+        elif parsed.path == "/api/partner/me":
+            self._partner_me()
         elif parsed.path == "/api/bookings":
             self._list_bookings()
         elif parsed.path == "/api/professional/transactions":
@@ -1128,10 +1160,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._chat_message(parsed.path.split("/")[-2], data, from_professional=False)
             elif re.fullmatch(r"/api/chats/[^/]+/reply", parsed.path):
                 self._chat_message(parsed.path.split("/")[-2], data, from_professional=True)
-            elif parsed.path == "/api/partners":
-                self._create_partner(data)
-            elif parsed.path == "/api/partners/manage":
-                self._manage_partner(data)
+            elif parsed.path == "/api/admin/partners":
+                self._admin_create_partner(data)
             elif re.fullmatch(r"/api/partners/[^/]+/click", parsed.path):
                 self._partner_click(parsed.path.split("/")[-2])
             elif re.fullmatch(r"/api/bookings/[^/]+/review", parsed.path):
@@ -1166,7 +1196,7 @@ class AppHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         parsed = parsed._replace(path=canonical_api_path(parsed.path))
         match = re.fullmatch(r"/api/bookings/([^/]+)/status", parsed.path)
-        admin_match = re.fullmatch(r"/api/admin/(professionals|users|privacy)/([^/]+)/status", parsed.path)
+        admin_match = re.fullmatch(r"/api/admin/(professionals|users|privacy|partners)/([^/]+)/status", parsed.path)
         if not match and not admin_match:
             self._json(404, {"error": "Operação não encontrada."})
             return
@@ -1174,6 +1204,8 @@ class AppHandler(BaseHTTPRequestHandler):
             data = self._read_json()
             if match:
                 self._update_booking_status(match.group(1), data)
+            elif admin_match.group(1) == "partners":
+                self._admin_partner_update(admin_match.group(2), data)
             else:
                 self._admin_update_status(admin_match.group(1), admin_match.group(2), data)
         except ValueError as error:
@@ -2174,8 +2206,10 @@ class AppHandler(BaseHTTPRequestHandler):
         open_orders = [b for b in bookings if b.get("status") in {"solicitado", "confirmado"}]
         cancelled = [b for b in bookings if b.get("status") == "cancelado"]
         partners = get_partners(data)
-        active_partners = [p for p in partners if p.get("status") != "paused"]
-        ad_monthly = sum(PARTNER_PLANS.get(p.get("plan"), PARTNER_PLANS["basico"])["price"] for p in active_partners)
+        states = {p["id"]: partner_validity(p)["state"] for p in partners}
+        active_partners = [p for p in partners if states[p["id"]] == "active"]
+        paying_partners = [p for p in active_partners if not p.get("demo")]
+        ad_monthly = sum(PARTNER_PLANS.get(p.get("plan"), PARTNER_PLANS["basico"])["price"] for p in paying_partners)
         manual_in = sum(money_of(t["amount"]) for t in data["financialTransactions"] if t.get("type") == "entrada")
         manual_out = sum(money_of(t["amount"]) for t in data["financialTransactions"] if t.get("type") == "saida")
         by_professional = {}
@@ -2221,7 +2255,8 @@ class AppHandler(BaseHTTPRequestHandler):
             },
             "projectedFee": round(sum(money_of(b.get("price")) for b in completed) * fee / 100, 2),
             "ads": {
-                "active": len(active_partners), "paused": len(partners) - len(active_partners),
+                "active": len(paying_partners), "paused": sum(1 for s in states.values() if s == "paused"),
+                "expired": sum(1 for s in states.values() if s == "expired"),
                 "monthlyRevenue": ad_monthly, "clicks": sum(int(p.get("clicks") or 0) for p in partners),
             },
             "manual": {"in": round(manual_in, 2), "out": round(manual_out, 2), "balance": round(manual_in - manual_out, 2)},
@@ -2244,7 +2279,7 @@ class AppHandler(BaseHTTPRequestHandler):
                            "status": item.get("status", "active")})
             professionals.append(result)
         partners = [
-            {key: value for key, value in item.items() if key != "tokenHash"}
+            {**{key: value for key, value in item.items() if key != "tokenHash"}, **partner_validity(item)}
             for item in get_partners(data)
         ]
         clients_by_key = {}
@@ -2352,14 +2387,18 @@ class AppHandler(BaseHTTPRequestHandler):
                 if not isinstance(active, bool):
                     raise ValueError("Informe se a conta deve ficar ativa.")
                 record = next((item for item in stored["users"] if item["id"] == record_id), None)
-                if not record or record.get("role") != "professional":
-                    self._json(404, {"error": "Conta profissional não encontrada."})
+                if not record or record.get("role") not in {"professional", "partner"}:
+                    self._json(404, {"error": "Conta não encontrada."})
                     return
                 record["active"] = active
                 if not active:
                     stored["sessions"] = [
                         session for session in stored["sessions"] if session.get("userId") != record_id
                     ]
+                if record.get("partnerId"):
+                    partner = next((item for item in get_partners(stored) if item["id"] == record["partnerId"]), None)
+                    if partner:
+                        partner["status"] = "active" if active else "paused"
                 if record.get("professionalId"):
                     professional = next(
                         (item for item in stored["professionals"] if item["id"] == record["professionalId"]),
@@ -2528,13 +2567,16 @@ class AppHandler(BaseHTTPRequestHandler):
         category = query.get("categoria", [""])[0]
         with DATA_LOCK:
             partners = get_partners(load_data())
-            active = [p for p in partners if p.get("status") == "active"]
+            active = [p for p in partners if partner_validity(p)["state"] == "active"]
         if category in PARTNER_CATEGORIES:
             active = [p for p in active if p.get("category") == category]
         active.sort(key=lambda p: (-PARTNER_PLANS.get(p.get("plan"), PARTNER_PLANS["basico"])["rank"], p.get("createdAt", "")))
         self._json(200, {"partners": [public_partner(p) for p in active]})
 
-    def _create_partner(self, data):
+    def _admin_create_partner(self, data):
+        if not self._require_user({"admin"}):
+            return
+
         def text(field, limit):
             value = data.get(field)
             return value.strip()[:limit] if isinstance(value, str) else ""
@@ -2554,22 +2596,32 @@ class AppHandler(BaseHTTPRequestHandler):
             parts = urlsplit(url)
             if parts.scheme not in ("http", "https") or not parts.netloc:
                 raise ValueError("O link do site deve começar com http:// ou https://.")
-        token = secrets.token_urlsafe(18)
+        password = data.get("password")
+        if not isinstance(password, str) or not 8 <= len(password) <= 128:
+            raise ValueError("A senha inicial da loja deve ter entre 8 e 128 caracteres.")
+        months = parse_months(data.get("months", 1))
+        today = date.today()
         partner = {
             "id": uuid.uuid4().hex[:12], "name": name, "category": category, "description": description,
             "url": url, "plan": plan, "color": "#1fe36a", "status": "active", "clicks": 0, "demo": False,
-            "email": email, "phone": phone, "tokenHash": token_hash(token), "createdAt": date.today().isoformat(),
+            "email": email, "phone": phone, "createdAt": today.isoformat(),
+            "validUntil": add_months(today, months).isoformat(),
         }
         with DATA_LOCK:
             stored = load_data()
+            if any(user.get("email", "").casefold() == email.casefold() for user in stored["users"]):
+                raise ValueError("Já existe uma conta com este e-mail.")
+            user = new_user(email, password, "partner")
+            user["partnerId"] = partner["id"]
             get_partners(stored).append(partner)
+            stored["users"].append(user)
             save_data(stored)
-        self._json(201, {"partner": public_partner(partner), "token": token})
+        self._json(201, {"partner": {**public_partner(partner), **partner_validity(partner)}, "user": public_user(user)})
 
     def _partner_click(self, partner_id):
         with DATA_LOCK:
             stored = load_data()
-            partner = next((p for p in get_partners(stored) if p["id"] == partner_id and p.get("status") == "active"), None)
+            partner = next((p for p in get_partners(stored) if p["id"] == partner_id and partner_validity(p)["state"] == "active"), None)
             if not partner:
                 self._json(404, {"error": "Anúncio não encontrado."})
                 return
@@ -2577,39 +2629,46 @@ class AppHandler(BaseHTTPRequestHandler):
             save_data(stored)
         self._json(200, {"clicks": partner["clicks"]})
 
-    def _find_partner_by_token(self, stored, token):
-        if not isinstance(token, str) or not token:
-            return None
-        digest = token_hash(token.strip())
-        return next((p for p in get_partners(stored) if secrets.compare_digest(p.get("tokenHash", ""), digest)), None)
-
-    def _partner_stats(self, token):
+    def _partner_me(self):
+        user = self._require_user({"partner"})
+        if not user:
+            return
         with DATA_LOCK:
-            partner = self._find_partner_by_token(load_data(), token)
+            partner = next((p for p in get_partners(load_data()) if p["id"] == user.get("partnerId")), None)
         if not partner:
-            self._json(404, {"error": "Código de acesso inválido."})
+            self._json(404, {"error": "Anúncio não encontrado para esta conta."})
             return
         plan = PARTNER_PLANS.get(partner.get("plan"), PARTNER_PLANS["basico"])
-        self._json(200, {"partner": public_partner(partner), "clicks": partner.get("clicks", 0),
-                         "status": partner.get("status"), "createdAt": partner.get("createdAt"), "planPrice": plan["price"]})
+        self._json(200, {"partner": {
+            "name": partner.get("name", ""), "categoryLabel": PARTNER_CATEGORIES.get(partner.get("category"), "Outros"),
+            "planLabel": plan["label"], "planPrice": plan["price"], "startedAt": partner.get("createdAt"),
+            **partner_validity(partner),
+        }})
 
-    def _manage_partner(self, data):
-        action = data.get("action")
-        if action not in ("pause", "activate"):
-            raise ValueError("Ação inválida.")
+    def _admin_partner_update(self, partner_id, data):
+        if not self._require_user({"admin"}):
+            return
+        months = parse_months(data.get("renewMonths")) if "renewMonths" in data else None
+        status = data.get("status")
+        if months is None and status not in {"active", "paused"}:
+            raise ValueError("Informe a renovação ou o status do anúncio.")
         with DATA_LOCK:
             stored = load_data()
-            user = self._current_user()
-            if user and user.get("role") == "admin":
-                partner = next((item for item in get_partners(stored) if item["id"] == data.get("partnerId")), None)
-            else:
-                partner = self._find_partner_by_token(stored, data.get("token"))
+            partner = next((item for item in get_partners(stored) if item["id"] == partner_id), None)
             if not partner:
-                self._json(404, {"error": "Código de acesso inválido."})
+                self._json(404, {"error": "Anúncio não encontrado."})
                 return
-            partner["status"] = "paused" if action == "pause" else "active"
+            if months is not None:
+                today = date.today()
+                try:
+                    current_end = date.fromisoformat(partner.get("validUntil") or "")
+                except ValueError:
+                    current_end = today
+                partner["validUntil"] = add_months(max(today, current_end), months).isoformat()
+            else:
+                partner["status"] = status
             save_data(stored)
-        self._json(200, {"status": partner["status"]})
+        self._json(200, {"status": partner["status"], **partner_validity(partner)})
 
     def log_message(self, format_string, *args):
         print(json.dumps({

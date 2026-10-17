@@ -2,6 +2,10 @@ async function getCurrentAccount() {
   return (await chamarAPI("auth/me")).user;
 }
 
+function accountHome(user) {
+  return user.role === "admin" ? "/admin.html" : user.role === "partner" ? "/partner-dashboard.html" : "/professional-dashboard.html";
+}
+
 function initLoginPage() {
   const form = document.getElementById("login-form");
   if (!form) return;
@@ -16,7 +20,7 @@ function initLoginPage() {
     console.error("Não foi possível recuperar o identificador salvo:", error);
   }
   getCurrentAccount().then(user => {
-    if (user) location.replace(user.role === "admin" ? "/admin.html" : "/professional-dashboard.html");
+    if (user) location.replace(accountHome(user));
   }).catch(error => {
     feedback.textContent = error.message;
   });
@@ -39,7 +43,7 @@ function initLoginPage() {
       } catch (error) {
         console.error("Não foi possível salvar o identificador de acesso:", error);
       }
-      location.href = user.role === "admin" ? "/admin.html" : "/professional-dashboard.html";
+      location.href = accountHome(user);
     } catch (error) {
       feedback.textContent = error.message;
       button.disabled = false;
@@ -168,7 +172,7 @@ function initProfessionalDashboard() {
       return;
     }
     if (user.role !== "professional" || !user.professionalId) {
-      location.replace("/admin.html");
+      location.replace(accountHome(user));
       return;
     }
     const { professional } = await chamarAPI(`profissionais/${encodeURIComponent(user.professionalId)}/editar`);
@@ -305,6 +309,32 @@ function initProfessionalDashboard() {
   });
 }
 
+function initPartnerDashboard() {
+  const box = document.getElementById("partner-validity");
+  if (!box) return;
+  getCurrentAccount().then(async user => {
+    if (!user) {
+      location.replace("/login.html");
+      return;
+    }
+    if (user.role !== "partner") {
+      location.replace(accountHome(user));
+      return;
+    }
+    const { partner } = await chamarAPI("partner/me");
+    const fmt = value => value ? new Date(`${value}T12:00:00`).toLocaleDateString("pt-BR") : "—";
+    const labels = { active: "No ar", paused: "Pausado", expired: "Vencido" };
+    const left = partner.daysLeft;
+    const hint = partner.state === "expired" ? "Seu anúncio venceu e saiu do ar. Fale com a equipe Click Beleza para renovar."
+      : partner.state === "paused" ? "Seu anúncio está pausado pela equipe Click Beleza."
+      : left === null ? "Sem data de vencimento." : left <= 7 ? `Vence em ${left} ${left === 1 ? "dia" : "dias"}. Fale com a equipe para renovar.` : `Faltam ${left} dias para vencer.`;
+    box.innerHTML = `<h2>${escapeHtml(partner.name)}</h2><div class="admin-stat-grid finance-grid"><div class="admin-stat"><strong>${escapeHtml(labels[partner.state] || partner.state)}</strong><span>Situação</span></div><div class="admin-stat"><strong>${escapeHtml(fmt(partner.validUntil))}</strong><span>Válido até</span><small>${escapeHtml(hint)}</small></div><div class="admin-stat"><strong>${escapeHtml(partner.planLabel)}</strong><span>Plano</span><small>${money(partner.planPrice)}/mês</small></div><div class="admin-stat"><strong>${escapeHtml(fmt(partner.startedAt))}</strong><span>Início</span></div></div>`;
+  }).catch(error => {
+    document.getElementById("partner-feedback").textContent = error.message;
+    box.innerHTML = "";
+  });
+}
+
 function initAdminDashboard() {
   const root = document.querySelector(".admin-shell");
   if (!root) return;
@@ -371,11 +401,13 @@ function initAdminDashboard() {
     bookingList.innerHTML = overview.bookings.length ? overview.bookings.map(item => `<article class="admin-row"><div><h3>${escapeHtml(item.customerName)} · ${escapeHtml(item.serviceName)}</h3><p>${escapeHtml(item.professionalName)} · ${escapeHtml(item.date)} às ${escapeHtml(item.time)} · ${money(item.price)}</p><small>${escapeHtml(item.customerEmail || "")} ${escapeHtml(item.customerPhone || "")}</small><small>${escapeHtml(bookingPaymentSummary(item))}</small><span class="admin-status ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></div><div class="admin-row-actions">${item.status === "solicitado" ? `<button class="button button-small" data-booking-id="${escapeHtml(item.id)}" data-booking-status="confirmado">Confirmar</button>` : ""}${item.status === "confirmado" ? `<button class="button button-small" data-booking-id="${escapeHtml(item.id)}" data-booking-status="concluido">Concluir</button>` : ""}${["solicitado", "confirmado"].includes(item.status) ? `<button class="button button-outline button-small" data-booking-id="${escapeHtml(item.id)}" data-booking-status="cancelado">Cancelar</button>` : ""}</div></article>`).join("") : '<p class="empty-state">Nenhum agendamento.</p>';
     chatList.innerHTML = overview.chats.length ? overview.chats.map(chat => `<article class="admin-row admin-chat-row"><div><h3>${escapeHtml(chat.customerName)} · ${escapeHtml(chat.professionalName)}</h3><div class="chat-log">${chatBubbles(chat.messages, "professional")}</div><form class="chat-reply" data-admin-chat="${escapeHtml(chat.id)}"><input name="text" required maxlength="1000" placeholder="Responder conversa"><button class="button button-small" type="submit">Responder</button></form></div></article>`).join("") : '<p class="empty-state">Nenhuma conversa.</p>';
     clientList.innerHTML = overview.clients.length ? overview.clients.map(client => `<article class="admin-row"><div><h3>${escapeHtml(client.name || "Cliente")}</h3><p>${escapeHtml([client.email, client.phone].filter(Boolean).join(" · ") || "Contato registrado em conversa")}</p></div><div class="client-activity"><span>${client.bookings} ${client.bookings === 1 ? "pedido" : "pedidos"}</span><span>${client.conversations} ${client.conversations === 1 ? "conversa" : "conversas"}</span></div></article>`).join("") : '<p class="empty-state">Os clientes aparecerão quando houver pedidos ou conversas.</p>';
-    partnerList.innerHTML = overview.partners.length ? overview.partners.map(item => `<article class="admin-row"><div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.category)} · ${escapeHtml(item.plan)} · ${escapeHtml(item.email || "")} · ${escapeHtml(item.phone || "")}</p><small>${escapeHtml(item.clicks || 0)} cliques · <span class="admin-status ${item.status === "paused" ? "paused" : ""}">${escapeHtml(item.status)}</span></small></div><div class="admin-row-actions"><button class="button button-small" data-partner-id="${escapeHtml(item.id)}" data-partner-action="${item.status === "paused" ? "activate" : "pause"}">${item.status === "paused" ? "Ativar" : "Pausar"}</button></div></article>`).join("") : '<p class="empty-state">Nenhum anúncio.</p>';
+    const stateLabel = { active: "No ar", paused: "Pausado", expired: "Vencido" };
+    const fmtDate = value => value ? new Date(`${value}T12:00:00`).toLocaleDateString("pt-BR") : "sem vencimento";
+    partnerList.innerHTML = overview.partners.length ? overview.partners.map(item => `<article class="admin-row"><div><h3>${escapeHtml(item.name)}${item.demo ? " · Demonstração" : ""}</h3><p>${escapeHtml(item.category)} · plano ${escapeHtml(item.plan)} · ${escapeHtml(item.email || "")} · ${escapeHtml(item.phone || "")}</p><small>${escapeHtml(item.clicks || 0)} cliques · válido até ${escapeHtml(fmtDate(item.validUntil))}${item.daysLeft !== null && item.state !== "expired" ? ` (${item.daysLeft} dias)` : ""} · <span class="admin-status ${item.state === "active" ? "" : "paused"}">${escapeHtml(stateLabel[item.state] || item.state)}</span></small></div><div class="admin-row-actions"><button class="button button-small" data-partner-id="${escapeHtml(item.id)}" data-partner-renew="1">Renovar +1 mês</button><button class="button button-outline button-small" data-partner-id="${escapeHtml(item.id)}" data-partner-renew="12">+12 meses</button><button class="button button-outline button-small" data-partner-id="${escapeHtml(item.id)}" data-partner-status="${item.status === "paused" ? "active" : "paused"}">${item.status === "paused" ? "Ativar" : "Pausar"}</button></div></article>`).join("") : '<p class="empty-state">Nenhum anúncio.</p>';
     const privacyLabels = { acesso: "Acesso", correcao: "Correção", exclusao: "Exclusão", reclamacao: "Reclamação" };
     const privacyStatus = { aberta: "Aberta", em_andamento: "Em andamento", concluida: "Concluída" };
     privacyList.innerHTML = overview.privacyRequests.length ? overview.privacyRequests.map(item => `<article class="admin-row"><div><h3>${escapeHtml(item.protocol)} · ${escapeHtml(privacyLabels[item.type] || item.type)}</h3><p>${escapeHtml(item.name)} · ${escapeHtml(item.contact)}</p><small>${escapeHtml(item.message)}</small><span class="admin-status ${item.status === "concluida" ? "" : "paused"}">${escapeHtml(privacyStatus[item.status] || item.status)}</span></div><div class="admin-row-actions">${item.status === "aberta" ? `<button class="button button-small" data-privacy-id="${escapeHtml(item.id)}" data-privacy-status="em_andamento">Iniciar</button>` : ""}${item.status !== "concluida" ? `<button class="button button-outline button-small" data-privacy-id="${escapeHtml(item.id)}" data-privacy-status="concluida">Concluir</button>` : ""}</div></article>`).join("") : '<p class="empty-state">Nenhuma solicitação.</p>';
-    userList.innerHTML = overview.users.length ? overview.users.map(item => `<article class="admin-row"><div><h3>${escapeHtml(item.email)}</h3><p>${item.role === "admin" ? "Administrador" : "Profissional"} · ${item.active ? "Ativa" : "Desativada"}</p></div>${item.role === "professional" ? `<div class="admin-row-actions"><button class="button button-small" data-user-id="${escapeHtml(item.id)}" data-user-active="${String(!item.active)}">${item.active ? "Desativar conta" : "Reativar conta"}</button></div>` : ""}</article>`).join("") : '<p class="empty-state">Nenhuma conta.</p>';
+    userList.innerHTML = overview.users.length ? overview.users.map(item => `<article class="admin-row"><div><h3>${escapeHtml(item.email)}</h3><p>${item.role === "admin" ? "Administrador" : item.role === "partner" ? "Loja parceira" : "Profissional"} · ${item.active ? "Ativa" : "Desativada"}</p></div>${item.role !== "admin" ? `<div class="admin-row-actions"><button class="button button-small" data-user-id="${escapeHtml(item.id)}" data-user-active="${String(!item.active)}">${item.active ? "Desativar conta" : "Reativar conta"}</button></div>` : ""}</article>`).join("") : '<p class="empty-state">Nenhuma conta.</p>';
   }
 
   async function load() {
@@ -400,7 +432,7 @@ function initAdminDashboard() {
       return;
     }
     if (user.role !== "admin") {
-      location.replace("/professional-dashboard.html");
+      location.replace(accountHome(user));
       return;
     }
     load();
@@ -418,7 +450,8 @@ function initAdminDashboard() {
       } else if (button.dataset.profileId) {
         await chamarAPI(`admin/professionals/${encodeURIComponent(button.dataset.profileId)}/status`, { method: "PATCH", body: JSON.stringify({ status: button.dataset.profileStatus }) });
       } else if (button.dataset.partnerId) {
-        await chamarAPI("partners/manage", { method: "POST", body: JSON.stringify({ partnerId: button.dataset.partnerId, action: button.dataset.partnerAction }) });
+        const body = button.dataset.partnerRenew ? { renewMonths: Number(button.dataset.partnerRenew) } : { status: button.dataset.partnerStatus };
+        await chamarAPI(`admin/partners/${encodeURIComponent(button.dataset.partnerId)}/status`, { method: "PATCH", body: JSON.stringify(body) });
       } else if (button.dataset.privacyId) {
         await chamarAPI(`admin/privacy/${encodeURIComponent(button.dataset.privacyId)}/status`, { method: "PATCH", body: JSON.stringify({ status: button.dataset.privacyStatus }) });
       } else if (button.dataset.userId) {
@@ -433,6 +466,19 @@ function initAdminDashboard() {
     }
   });
   root.addEventListener("submit", async event => {
+    const partnerForm = event.target.closest("#admin-partner-form");
+    if (partnerForm) {
+      event.preventDefault();
+      try {
+        await chamarAPI("admin/partners", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(partnerForm))) });
+        partnerForm.reset();
+        feedback.textContent = "Anúncio publicado e conta da loja criada.";
+        await load();
+      } catch (error) {
+        feedback.textContent = error.message;
+      }
+      return;
+    }
     const form = event.target.closest("form[data-admin-chat]");
     if (!form) return;
     event.preventDefault();
@@ -450,3 +496,4 @@ initLoginPage();
 initCustomerOrdersPage();
 initProfessionalDashboard();
 initAdminDashboard();
+initPartnerDashboard();

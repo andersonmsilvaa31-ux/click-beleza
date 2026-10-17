@@ -618,7 +618,7 @@ function initPartners() {
   if (!grid) return;
   chamarAPI("partners").then(({ partners }) => {
     if (!partners.length) {
-      grid.innerHTML = '<p class="muted-copy">Nenhuma parceira por aqui ainda. <a class="inline-link" href="/anunciar.html">Seja a primeira →</a></p>';
+      grid.innerHTML = '<p class="muted-copy">Em breve, novas lojas parceiras por aqui.</p>';
       return;
     }
     grid.innerHTML = partners.map(partner => {
@@ -627,56 +627,13 @@ function initPartners() {
       const inner = `<span class="partner-logo" style="--partner:${escapeHtml(partner.color)}">${escapeHtml(initials)}</span><span class="partner-info"><small>${escapeHtml(tag)} · ${escapeHtml(partner.categoryLabel)}</small><strong>${escapeHtml(partner.name)}</strong><em>${escapeHtml(partner.description)}</em></span>`;
       return partner.url
         ? `<a class="partner-card ${escapeHtml(partner.plan)}" href="${escapeHtml(partner.url)}" target="_blank" rel="noopener sponsored" data-partner="${escapeHtml(partner.id)}">${inner}</a>`
-        : `<a class="partner-card ${escapeHtml(partner.plan)}" href="/anunciar.html">${inner}</a>`;
+        : `<div class="partner-card ${escapeHtml(partner.plan)}">${inner}</div>`;
     }).join("");
     grid.addEventListener("click", event => {
       const card = event.target.closest("[data-partner]");
       if (card) chamarAPI(`partners/${card.dataset.partner}/click`, { method: "POST", body: "{}", keepalive: true }).catch(() => {});
     });
   }).catch(error => { grid.innerHTML = `<p class="muted-copy">${escapeHtml(error.message)}</p>`; });
-}
-
-function initAdvertise() {
-  const form = document.getElementById("advertise-form");
-  if (!form) return;
-  const feedback = document.getElementById("advertise-feedback");
-  document.querySelectorAll('input[name="planPick"]').forEach(radio => radio.addEventListener("change", () => { form.elements.plan.value = radio.value; }));
-  form.addEventListener("submit", async event => {
-    event.preventDefault();
-    feedback.textContent = "Publicando…";
-    try {
-      const body = JSON.stringify(Object.fromEntries(new FormData(form)));
-      const { token } = await chamarAPI("partners", { method: "POST", body });
-      document.getElementById("advertise-token").textContent = token;
-      document.getElementById("advertise-success").hidden = false;
-      document.getElementById("advertise-success").scrollIntoView({ behavior: "smooth" });
-      form.reset();
-      form.elements.plan.value = "destaque";
-      feedback.textContent = "";
-    } catch (error) {
-      feedback.textContent = error.message;
-    }
-  });
-  const statsForm = document.getElementById("stats-form");
-  const result = document.getElementById("stats-result");
-  let currentToken = "";
-  function renderStats(stats) {
-    const paused = stats.status !== "active";
-    result.innerHTML = `<p><strong>${escapeHtml(stats.partner.name)}</strong> · plano ${escapeHtml(stats.partner.planLabel)} (${money(stats.planPrice)}/mês)</p><p class="stats-number">${Number(stats.clicks)} <small>${Number(stats.clicks) === 1 ? "clique" : "cliques"} no anúncio</small></p><p>Status: <b>${paused ? "pausado" : "no ar"}</b></p><button class="button button-outline" type="button" id="toggle-ad">${paused ? "Reativar anúncio" : "Pausar anúncio"}</button>`;
-    document.getElementById("toggle-ad").addEventListener("click", async () => {
-      try {
-        await chamarAPI("partners/manage", { method: "POST", body: JSON.stringify({ token: currentToken, action: paused ? "activate" : "pause" }) });
-        renderStats(await chamarAPI(`partners/stats?token=${encodeURIComponent(currentToken)}`));
-      } catch (error) { result.textContent = error.message; }
-    });
-  }
-  statsForm.addEventListener("submit", async event => {
-    event.preventDefault();
-    currentToken = statsForm.elements.token.value.trim();
-    try {
-      renderStats(await chamarAPI(`partners/stats?token=${encodeURIComponent(currentToken)}`));
-    } catch (error) { result.textContent = error.message; }
-  });
 }
 
 function initInspirationCarousel() {
@@ -862,8 +819,10 @@ function initAuthNav() {
     const link = document.createElement("a");
     link.className = "account-nav-link";
     link.href = user?.role === "admin" ? "/admin.html"
+      : user?.role === "partner" ? "/partner-dashboard.html"
       : user?.role === "professional" ? "/professional-dashboard.html" : "/login.html";
     link.textContent = user?.role === "admin" ? "Admin"
+      : user?.role === "partner" ? "Minha loja"
       : user?.role === "professional" ? "Meu perfil" : "Entrar";
     nav.append(link);
     if (!user) {
@@ -912,6 +871,5 @@ initAgenda();
 initChatInbox();
 initInspirationCarousel();
 initPartners();
-initAdvertise();
 initChatbot();
 initAuthNav();

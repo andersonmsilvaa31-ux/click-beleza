@@ -15,7 +15,21 @@
     <section class="admin-section" id="admin-clients"><div class="admin-section-heading"><div><p class="eyebrow">RELACIONAMENTO</p><h2>Clientes</h2></div></div><p class="admin-section-note">Clientes identificados pelos pedidos e conversas; cada profissional só acessa os clientes ligados ao próprio perfil.</p><div class="admin-list" id="admin-client-list"></div></section>
     <section class="admin-section" id="admin-bookings"><div class="admin-section-heading"><div><p class="eyebrow">OPERAÇÃO</p><h2>Agendamentos</h2></div></div><div class="admin-list" id="admin-booking-list"></div></section>
     <section class="admin-section" id="admin-chats"><div class="admin-section-heading"><div><p class="eyebrow">ATENDIMENTO</p><h2>Conversas e suporte</h2></div></div><div class="admin-list" id="admin-chat-list"></div></section>
-    <section class="admin-section" id="admin-partners"><div class="admin-section-heading"><div><p class="eyebrow">COMERCIAL</p><h2>Anúncios e marcas parceiras</h2></div><a class="button button-outline button-small" href="/anunciar.html">Gerenciar anúncios</a></div><div class="admin-list" id="admin-partner-list"></div></section>
+    <section class="admin-section" id="admin-partners"><div class="admin-section-heading"><div><p class="eyebrow">COMERCIAL</p><h2>Anúncios e lojas parceiras</h2></div></div><p class="admin-section-note">Somente o administrador publica, renova e pausa anúncios. Cada loja recebe uma conta própria que só enxerga a validade do próprio anúncio.</p>
+      <form class="form-card" id="admin-partner-form"><div class="form-grid">
+        <h3 class="full">Publicar novo anúncio</h3>
+        <label>Nome da marca ou loja<input name="name" required maxlength="80"></label>
+        <label>Categoria<select name="category" required><option value="">Selecione</option><option value="cosmeticos">Cosméticos</option><option value="cabelo">Produtos para cabelo</option><option value="unhas">Unhas e esmaltes</option><option value="barba">Barba e barbearia</option><option value="perfumaria">Perfumaria</option><option value="estetica">Estética e skincare</option><option value="clinica">Clínica / spa</option><option value="outros">Outros</option></select></label>
+        <label class="full">Texto do anúncio<textarea name="description" required minlength="10" maxlength="160"></textarea></label>
+        <label class="full">Link do site ou Instagram (opcional)<input name="url" type="url" maxlength="300"></label>
+        <label>Plano<select name="plan" required><option value="basico">Básico · R$ 49/mês</option><option value="destaque" selected>Destaque · R$ 99/mês</option><option value="premium">Premium · R$ 199/mês</option></select></label>
+        <label>Validade (meses)<input name="months" type="number" min="1" max="24" value="1" required></label>
+        <label>E-mail da loja (login)<input name="email" type="email" required maxlength="200" autocomplete="off"></label>
+        <label>Telefone / WhatsApp<input name="phone" type="tel" required maxlength="30"></label>
+        <label class="full">Senha inicial da loja<input name="password" type="text" required minlength="8" maxlength="128" autocomplete="off"></label>
+        <button class="button button-primary full" type="submit">Publicar anúncio e criar conta</button>
+      </div></form>
+      <div class="admin-list" id="admin-partner-list"></div></section>
     <section class="admin-section" id="admin-privacy"><div class="admin-section-heading"><div><p class="eyebrow">LGPD</p><h2>Solicitações de privacidade e reclamações</h2></div></div><div class="admin-list" id="admin-privacy-list"></div></section>
     <section class="admin-section" id="admin-users"><div class="admin-section-heading"><div><p class="eyebrow">ACESSOS</p><h2>Contas e permissões</h2></div></div><p class="admin-section-note">Administradores têm acesso global. Contas profissionais ficam limitadas ao próprio perfil e aos clientes atendidos.</p><div class="admin-list" id="admin-user-list"></div></section>
   </main>

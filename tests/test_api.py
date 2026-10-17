@@ -244,6 +244,45 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(row["orders"], 1)
         self.assertEqual(self.get_json("/api/admin/overview")[0], 401)
 
+    def test_only_admin_publishes_ads_and_partner_account_sees_only_own_validity(self):
+        self.create_user("admin")
+        self.assertEqual(self.post_json("/api/partners", {"name": "X"})[0], 404)
+        payload = {"name": "Loja Teste", "category": "cosmeticos", "description": "Cosméticos com entrega em Marília.",
+                   "plan": "premium", "months": 2, "email": "loja@example.com", "phone": "14999999999",
+                   "password": "senha-da-loja-1"}
+        self.assertEqual(self.authenticated_request("/api/admin/partners", "POST", payload)[0], 401)
+        self.assertEqual(self.authenticated_request("/api/auth/login", "POST", {"identifier": "admin@example.com", "password": "test-password-123"})[0], 200)
+        status, created = self.authenticated_request("/api/admin/partners", "POST", payload)
+        self.assertEqual(status, 201)
+        partner_id = created["partner"]["id"]
+        self.assertEqual(created["user"]["role"], "partner")
+        self.assertEqual(self.authenticated_request("/api/admin/partners", "POST", payload)[0], 400)  # e-mail repetido
+        self.assertIn(partner_id, [p["id"] for p in self.get_json("/api/partners")[1]["partners"]])
+
+        self.assertEqual(self.authenticated_request("/api/auth/login", "POST", {"identifier": "loja@example.com", "password": "senha-da-loja-1"})[0], 200)
+        status, mine = self.authenticated_request("/api/partner/me")
+        self.assertEqual(status, 200)
+        self.assertEqual(mine["partner"]["state"], "active")
+        self.assertGreater(mine["partner"]["daysLeft"], 50)
+        for path, method, body in (("/api/admin/overview", "GET", None), ("/api/admin/partners", "POST", payload),
+                                   (f"/api/admin/partners/{partner_id}/status", "PATCH", {"status": "paused"})):
+            self.assertEqual(self.authenticated_request(path, method, body)[0], 403)
+
+        self.assertEqual(self.authenticated_request("/api/auth/login", "POST", {"identifier": "admin@example.com", "password": "test-password-123"})[0], 200)
+        self.assertEqual(self.authenticated_request("/api/partner/me")[0], 403)
+        data = backend.load_data()
+        next(p for p in data["partners"] if p["id"] == partner_id)["validUntil"] = "2020-01-01"
+        backend.save_data(data)
+        self.assertNotIn(partner_id, [p["id"] for p in self.get_json("/api/partners")[1]["partners"]])
+        overview = self.authenticated_request("/api/admin/overview")[1]
+        self.assertEqual(next(p for p in overview["partners"] if p["id"] == partner_id)["state"], "expired")
+        self.assertEqual(overview["finance"]["ads"]["expired"], 1)
+        status, renewed = self.authenticated_request(f"/api/admin/partners/{partner_id}/status", "PATCH", {"renewMonths": 1})
+        self.assertEqual((status, renewed["state"]), (200, "active"))
+        self.assertIn(partner_id, [p["id"] for p in self.get_json("/api/partners")[1]["partners"]])
+        self.assertEqual(self.authenticated_request(f"/api/admin/partners/{partner_id}/status", "PATCH", {"status": "paused"})[1]["state"], "paused")
+        self.assertNotIn(partner_id, [p["id"] for p in self.get_json("/api/partners")[1]["partners"]])
+
     def test_static_assets_use_etag_gzip_head_and_options(self):
         request = urllib.request.Request(self.base_url + "/app.js", headers={"Accept-Encoding": "gzip"})
         with urllib.request.urlopen(request, timeout=5) as response:
