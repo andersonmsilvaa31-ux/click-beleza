@@ -401,7 +401,8 @@ async function initProfessional() {
           : hasServices ? `<form id="booking-form"><input type="hidden" name="professionalId" value="${escapeHtml(professional.id)}">
           <label>Seu nome<input name="customerName" required maxlength="100" autocomplete="name"></label>
           <label>Telefone / WhatsApp<input type="tel" name="customerPhone" required maxlength="30" autocomplete="tel"></label>
-          <div class="booking-when"><label>Data<input type="date" name="date" required></label><label>Horário<select name="time" required><option value="">Selecione</option>${["09:00","10:00","11:00","13:00","14:00","15:00","16:00","17:00"].map(time => `<option>${time}</option>`).join("")}</select></label></div>
+          <div class="booking-when"><label>Data<input type="date" name="date" required></label><label>Horário<select name="time" required disabled><option value="">Escolha a data</option></select></label></div>
+          <small id="availability-note" class="booking-disclaimer" aria-live="polite">Os horários consideram a duração do serviço. Fuso: Brasília.</small>
           <p class="pay-note"><strong>Como funciona:</strong> envie o pedido e, na próxima etapa, escolha Pix ou cartão para uma simulação. Nenhum pagamento real será feito.</p>
           <button class="button button-primary button-wide" type="submit">Enviar pedido e continuar</button><p id="booking-feedback" class="form-feedback" aria-live="polite"></p>
         </form><small class="booking-disclaimer">Seu horário só fica reservado após confirmação do profissional.</small>`
@@ -415,6 +416,39 @@ async function initProfessional() {
     if (bookingForm) {
       const dateInput = bookingForm.querySelector('[name="date"]');
       dateInput.min = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+      const timeSelect = bookingForm.querySelector('[name="time"]');
+      const availabilityNote = document.getElementById("availability-note");
+      let availabilityRequest = 0;
+      const refreshAvailability = async () => {
+        const request = ++availabilityRequest;
+        const serviceIndex = document.querySelector('[name="booking-service"]:checked')?.value ?? "0";
+        const service = services[Number(serviceIndex)];
+        if (!dateInput.value || !service) {
+          timeSelect.disabled = true;
+          timeSelect.innerHTML = '<option value="">Escolha a data</option>';
+          return;
+        }
+        timeSelect.disabled = true;
+        timeSelect.innerHTML = '<option value="">Consultando…</option>';
+        try {
+          const query = new URLSearchParams({ date: dateInput.value, service: service.name });
+          const result = await chamarAPI(`profissionais/${encodeURIComponent(professional.id)}/availability?${query}`);
+          if (request !== availabilityRequest) return;
+          timeSelect.innerHTML = result.times.length
+            ? '<option value="">Selecione</option>' + result.times.map(time => `<option value="${escapeHtml(time)}">${escapeHtml(time)}</option>`).join("")
+            : '<option value="">Sem horários nesta data</option>';
+          timeSelect.disabled = !result.times.length;
+          availabilityNote.textContent = result.times.length
+            ? `Serviço de ${result.duration} min. Mostramos só os horários livres (Brasília).`
+            : "Nenhum horário livre para este serviço nesta data. Tente outro dia.";
+        } catch (error) {
+          if (request !== availabilityRequest) return;
+          timeSelect.innerHTML = '<option value="">Não foi possível consultar</option>';
+          availabilityNote.textContent = error.message;
+        }
+      };
+      dateInput.addEventListener("change", refreshAvailability);
+      document.querySelectorAll('[name="booking-service"]').forEach(input => input.addEventListener("change", refreshAvailability));
       let currentBooking = null;
       bookingForm.addEventListener("submit", async event => {
         event.preventDefault();
@@ -464,6 +498,7 @@ async function initProfessional() {
           form.querySelector("#checkout-heading")?.focus();
         } catch (error) {
           feedback.textContent = error.message;
+          if (!currentBooking && document.contains(timeSelect)) refreshAvailability();
         } finally {
           const activeButton = form.querySelector('[type="submit"]');
           if (activeButton) activeButton.disabled = false;

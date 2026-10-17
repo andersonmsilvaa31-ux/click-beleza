@@ -2,8 +2,11 @@ __pycache__/
 *.py[cod]
 .env
 .env.*
+!.env.example
 .venv/
 venv/
 pgpass.conf
 *.pgpass
 click_beleza_data.tmp
+backups/
+*.backup.json

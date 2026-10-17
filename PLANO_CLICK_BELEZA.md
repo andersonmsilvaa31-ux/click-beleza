@@ -252,3 +252,9 @@ clareza qualquer comissão ou cobrança ao cliente e ao profissional.
 - Agendamentos confirmados, concluídos e cancelados.
 - Avaliação do atendimento e retorno de clientes.
 - Custo para atrair clientes e profissionais.
+
+## Infraestrutura de produção
+- Variáveis: CLICK_BELEZA_DATABASE_URL, CLICK_BELEZA_HOST/PORT, CLICK_BELEZA_SECURE (cookie Secure + HSTS), CLICK_BELEZA_TRUST_PROXY, CLICK_BELEZA_RATE_LIMIT.
+- Cabeçalhos: CSP, HSTS, Permissions-Policy, COOP/CORP. Limite de requisições por IP. Endpoints /healthz e /readyz. Logs em JSON. Encerramento limpo por SIGTERM.
+- Deploy: Dockerfile, docker-compose.yml (PostgreSQL, app, Caddy com HTTPS automático, backup diário com retenção de 14 dias), Caddyfile e .env.example. CI em .github/workflows/ci.yml.
+- Subir: copie .env.example para .env, preencha SITE_DOMAIN e POSTGRES_PASSWORD e rode docker compose up -d --build.

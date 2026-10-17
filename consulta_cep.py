@@ -11,7 +11,8 @@ import threading
 import time
 import uuid
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
@@ -25,10 +26,65 @@ import psycopg
 APP_DIR = Path(__file__).resolve().parent
 DATA_FILE = APP_DIR / "click_beleza_data.json"
 DATABASE_URL = os.environ.get("CLICK_BELEZA_DATABASE_URL")
-HOST = "127.0.0.1"
-PORT = 8765
+HOST = os.environ.get("CLICK_BELEZA_HOST", "127.0.0.1")
+PORT = int(os.environ.get("CLICK_BELEZA_PORT", "8765"))
+COOKIE_SECURE = os.environ.get("CLICK_BELEZA_SECURE", "").lower() in {"1", "true", "yes"}
+TRUST_PROXY = os.environ.get("CLICK_BELEZA_TRUST_PROXY", "").lower() in {"1", "true", "yes"}
+COOKIE_FLAGS = "; Secure" if COOKIE_SECURE else ""
+RATE_LIMIT_PER_MINUTE = int(os.environ.get("CLICK_BELEZA_RATE_LIMIT", "240"))
+RATE_WINDOW_SECONDS = 60
+RATE_HITS = {}
+PRIVACY_REQUEST_TYPES = {"acesso", "correcao", "exclusao", "reclamacao"}
+RATE_LOCK = threading.Lock()
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; "
+    "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+)
 PILOT_REGION = "Marília, SP"
-DATA_LOCK = threading.RLock()
+class DataLock:
+    """Trava reentrante entre threads e, com PostgreSQL, entre processos (advisory lock)."""
+    ADVISORY_KEY = 727_001
+
+    def __init__(self):
+        self._thread_lock = threading.RLock()
+        self._depth = 0
+        self._connection = None
+
+    def __enter__(self):
+        self._thread_lock.acquire()
+        try:
+            if self._depth == 0 and DATABASE_URL:
+                self._connection = psycopg.connect(DATABASE_URL, connect_timeout=5, autocommit=True)
+                self._connection.execute("SELECT pg_advisory_lock(%s)", (self.ADVISORY_KEY,))
+            self._depth += 1
+        except psycopg.Error as error:
+            self._close()
+            self._thread_lock.release()
+            raise RuntimeError("Não foi possível obter a trava do banco de dados.") from error
+        except BaseException:
+            self._thread_lock.release()
+            raise
+        return self
+
+    def _close(self):
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            finally:
+                self._connection = None
+
+    def __exit__(self, *_):
+        self._depth -= 1
+        try:
+            if self._depth == 0:
+                self._close()
+        finally:
+            self._thread_lock.release()
+        return False
+
+
+DATA_LOCK = DataLock()
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/favicon.ico": ("favicon.svg", "image/svg+xml"),
@@ -41,6 +97,9 @@ STATIC_FILES = {
     "/services.html": ("services.html", "text/html; charset=utf-8"),
     "/anunciar.html": ("anunciar.html", "text/html; charset=utf-8"),
     "/login.html": ("login.html", "text/html; charset=utf-8"),
+    "/termos.html": ("termos.html", "text/html; charset=utf-8"),
+    "/privacidade.html": ("privacidade.html", "text/html; charset=utf-8"),
+    "/legal.js": ("legal.js", "text/javascript; charset=utf-8"),
     "/customer-orders.html": ("customer-orders.html", "text/html; charset=utf-8"),
     "/admin.html": ("admin.html", "text/html; charset=utf-8"),
     "/professional-dashboard.html": ("professional-dashboard.html", "text/html; charset=utf-8"),
@@ -192,6 +251,61 @@ def lookup_cep(raw_cep):
 
 
 VALID_STATUSES = {"solicitado", "confirmado", "concluido", "cancelado"}
+ACTIVE_BOOKING_STATUSES = ("solicitado", "confirmado")
+# Janelas de atendimento em minutos desde 00:00; o intervalo de 12h às 13h fica fechado.
+WORKING_WINDOWS = ((9 * 60, 12 * 60), (13 * 60, 18 * 60))
+SLOT_STEP_MINUTES = 30
+DEFAULT_SERVICE_MINUTES = 60
+try:
+    BUSINESS_TZ = ZoneInfo("America/Sao_Paulo")
+except ZoneInfoNotFoundError:
+    BUSINESS_TZ = timezone(timedelta(hours=-3))
+
+
+def business_now():
+    return datetime.now(BUSINESS_TZ)
+
+
+def to_minutes(clock):
+    hours, minutes = clock.split(":")
+    return int(hours) * 60 + int(minutes)
+
+
+def service_minutes(service):
+    try:
+        return max(15, min(int(service.get("duration", DEFAULT_SERVICE_MINUTES)), 600))
+    except (TypeError, ValueError):
+        return DEFAULT_SERVICE_MINUTES
+
+
+def busy_intervals(bookings, professional_id, day):
+    intervals = []
+    for booking in bookings:
+        if (
+            booking.get("professionalId") == professional_id
+            and booking.get("date") == day
+            and booking.get("status") in ACTIVE_BOOKING_STATUSES
+        ):
+            start = to_minutes(booking["time"])
+            intervals.append((start, start + int(booking.get("duration") or DEFAULT_SERVICE_MINUTES)))
+    return intervals
+
+
+def available_start_times(bookings, professional_id, day, duration):
+    """Horários de início livres: o serviço inteiro cabe numa janela e não colide com reservas ativas."""
+    now = business_now()
+    today = now.date().isoformat()
+    earliest = now.hour * 60 + now.minute if day == today else 0
+    busy = busy_intervals(bookings, professional_id, day)
+    times = []
+    for window_start, window_end in WORKING_WINDOWS:
+        for start in range(window_start, window_end - duration + 1, SLOT_STEP_MINUTES):
+            if start <= earliest and day == today:
+                continue
+            if any(start < busy_end and busy_start < start + duration for busy_start, busy_end in busy):
+                continue
+            times.append(f"{start // 60:02d}:{start % 60:02d}")
+    return times
 SERVICE_LABELS = {
     "cabeleireiro": "cabelo", "barbeiro": "barbeiro barbearia", "manicure": "manicure",
     "pedicure": "pedicure", "sobrancelhas": "design de sobrancelhas",
@@ -266,6 +380,7 @@ def _validate_data(data):
     data.setdefault("chats", [])
     data.setdefault("partners", [])
     data.setdefault("financialTransactions", [])
+    data.setdefault("privacyRequests", [])
     if not isinstance(data["financialTransactions"], list):
         raise RuntimeError("Os registros financeiros do Click Beleza têm formato inválido.")
     return data
@@ -281,15 +396,86 @@ def _load_file_data():
         raise RuntimeError(f"Não foi possível ler {DATA_FILE.name}: {error}") from error
 
 
+def booking_slot_points(clock, duration):
+    start = to_minutes(clock)
+    return list(range(start, start + duration, SLOT_STEP_MINUTES))
+
+
+def reserve_booking_slots(professional_id, day, clock, duration, booking_id):
+    """Reserva as faixas de 30 min no banco; a chave primária impede sobreposição mesmo fora desta trava."""
+    if not DATABASE_URL:
+        return True
+    ensure_schema()
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=5) as connection:
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO booking_slots (professional_id, day, slot, booking_id) VALUES (%s, %s, %s, %s)",
+                    [(professional_id, day, point, booking_id) for point in booking_slot_points(clock, duration)],
+                )
+        return True
+    except psycopg.errors.UniqueViolation:
+        return False
+    except psycopg.Error as error:
+        raise RuntimeError("Não foi possível reservar o horário no banco de dados.") from error
+
+
+def release_booking_slots(booking_id):
+    if not DATABASE_URL:
+        return
+    ensure_schema()
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=5) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM booking_slots WHERE booking_id = %s", (booking_id,))
+    except psycopg.Error as error:
+        raise RuntimeError("Não foi possível liberar o horário no banco de dados.") from error
+
+
+_SCHEMA_READY = set()
+_SCHEMA_LOCK = threading.Lock()
+
+
+def ensure_schema():
+    """Cria as tabelas uma vez por URL, com trava; CREATE TABLE IF NOT EXISTS concorrente falha no PostgreSQL."""
+    key = DATABASE_URL
+    if not key or key in _SCHEMA_READY:
+        return
+    with _SCHEMA_LOCK:
+        if key in _SCHEMA_READY:
+            return
+        try:
+            with psycopg.connect(key, connect_timeout=5, autocommit=True) as connection:
+                connection.execute("SELECT pg_advisory_lock(%s)", (DataLock.ADVISORY_KEY + 1,))
+                try:
+                    connection.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS click_beleza_state (
+                            id SMALLINT PRIMARY KEY CHECK (id = 1),
+                            payload JSONB NOT NULL
+                        )
+                        """
+                    )
+                    connection.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS booking_slots (
+                            professional_id TEXT NOT NULL,
+                            day DATE NOT NULL,
+                            slot SMALLINT NOT NULL CHECK (slot BETWEEN 0 AND 1439),
+                            booking_id TEXT NOT NULL,
+                            PRIMARY KEY (professional_id, day, slot)
+                        )
+                        """
+                    )
+                    connection.execute("CREATE INDEX IF NOT EXISTS booking_slots_booking_id ON booking_slots (booking_id)")
+                finally:
+                    connection.execute("SELECT pg_advisory_unlock(%s)", (DataLock.ADVISORY_KEY + 1,))
+        except psycopg.Error as error:
+            raise RuntimeError("Não foi possível preparar as tabelas do banco de dados.") from error
+        _SCHEMA_READY.add(key)
+
+
 def _ensure_database_state(cursor):
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS click_beleza_state (
-            id SMALLINT PRIMARY KEY CHECK (id = 1),
-            payload JSONB NOT NULL
-        )
-        """
-    )
     cursor.execute("SELECT payload FROM click_beleza_state WHERE id = 1")
     row = cursor.fetchone()
     if row is None:
@@ -309,6 +495,7 @@ def load_data():
         if not DATABASE_URL:
             return _load_file_data()
         try:
+            ensure_schema()
             with psycopg.connect(DATABASE_URL, connect_timeout=5) as connection:
                 with connection.cursor() as cursor:
                     _ensure_database_state(cursor)
@@ -325,6 +512,7 @@ def save_data(data):
     with DATA_LOCK:
         _validate_data(data)
         if DATABASE_URL:
+            ensure_schema()
             try:
                 with psycopg.connect(DATABASE_URL, connect_timeout=5) as connection:
                     with connection.cursor() as cursor:
@@ -543,14 +731,52 @@ def canonical_api_path(path):
     return path
 
 
+def client_ip(handler):
+    """IP do cliente; só confia em X-Forwarded-For quando há proxy reverso declarado."""
+    if TRUST_PROXY:
+        forwarded = handler.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[-1].strip()[:64]
+    return handler.client_address[0]
+
+
+def rate_limited(key, limit, window=RATE_WINDOW_SECONDS):
+    """Janela deslizante simples por chave; devolve True quando excedeu."""
+    now = time.monotonic()
+    with RATE_LOCK:
+        hits = [moment for moment in RATE_HITS.get(key, ()) if now - moment < window]
+        if len(hits) >= limit:
+            RATE_HITS[key] = hits
+            return True
+        hits.append(now)
+        RATE_HITS[key] = hits
+        if len(RATE_HITS) > 20_000:
+            for stale in [name for name, items in RATE_HITS.items() if not items or now - items[-1] >= window]:
+                RATE_HITS.pop(stale, None)
+    return False
+
+
 class AppHandler(BaseHTTPRequestHandler):
+    timeout = 30
+
+    def _security_headers(self):
+        self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Cache-Control", "no-store")
+        if COOKIE_SECURE:
+            self.send_header("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+
     def _send(self, status, content_type, body):
         encoded = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Cache-Control", "no-store")
+        self._security_headers()
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -559,8 +785,7 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Cache-Control", "no-store")
+        self._security_headers()
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -635,7 +860,7 @@ class AppHandler(BaseHTTPRequestHandler):
         identifier = identifier.strip()
         if len(identifier) > 200 or len(password) > 128:
             raise ValueError("E-mail ou senha inválidos.")
-        remote = self.client_address[0]
+        remote = client_ip(self)
         now = time.monotonic()
         with LOGIN_LOCK:
             attempts = [attempt for attempt in LOGIN_ATTEMPTS.get(remote, []) if now - attempt < LOGIN_LOCKOUT_SECONDS]
@@ -667,16 +892,23 @@ class AppHandler(BaseHTTPRequestHandler):
         with LOGIN_LOCK:
             LOGIN_ATTEMPTS.pop(remote, None)
         session_token = secrets.token_urlsafe(32)
-        stored["sessions"] = [
-            session for session in stored["sessions"] if session.get("expiresAt", 0) > time.time()
-        ]
-        stored["sessions"].append({
-            "tokenHash": token_hash(session_token),
-            "userId": user["id"],
-            "expiresAt": time.time() + SESSION_TTL_SECONDS,
-        })
+        # Recarrega sob trava: o hash da senha é lento e outras requisições podem ter gravado nesse intervalo.
         try:
-            save_data(stored)
+            with DATA_LOCK:
+                stored = load_data()
+                current_user = next((item for item in stored["users"] if item["id"] == user["id"]), None)
+                if not current_user or not current_user.get("active", True):
+                    self._json(401, {"error": "E-mail ou senha incorretos."})
+                    return
+                stored["sessions"] = [
+                    session for session in stored["sessions"] if session.get("expiresAt", 0) > time.time()
+                ]
+                stored["sessions"].append({
+                    "tokenHash": token_hash(session_token),
+                    "userId": user["id"],
+                    "expiresAt": time.time() + SESSION_TTL_SECONDS,
+                })
+                save_data(stored)
         except RuntimeError as error:
             self._json(500, {"error": str(error)})
             return
@@ -687,7 +919,7 @@ class AppHandler(BaseHTTPRequestHandler):
         self._json(
             200,
             {"user": public_user(user, professional)},
-            {"Set-Cookie": f"{SESSION_COOKIE}={session_token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL_SECONDS}"},
+            {"Set-Cookie": f"{SESSION_COOKIE}={session_token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL_SECONDS}{COOKIE_FLAGS}"},
         )
 
     def _auth_logout(self):
@@ -700,24 +932,47 @@ class AppHandler(BaseHTTPRequestHandler):
         if session_cookie:
             digest = token_hash(session_cookie.value)
             try:
-                stored = load_data()
-                stored["sessions"] = [
-                    session for session in stored["sessions"]
-                    if not secrets.compare_digest(session.get("tokenHash", ""), digest)
-                ]
-                save_data(stored)
+                with DATA_LOCK:
+                    stored = load_data()
+                    stored["sessions"] = [
+                        session for session in stored["sessions"]
+                        if not secrets.compare_digest(session.get("tokenHash", ""), digest)
+                    ]
+                    save_data(stored)
             except RuntimeError as error:
                 self._json(500, {"error": str(error)})
                 return
         self._json(
             200,
             {"ok": True},
-            {"Set-Cookie": f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"},
+            {"Set-Cookie": f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{COOKIE_FLAGS}"},
         )
+
+    def _throttled(self):
+        if rate_limited(("global", client_ip(self)), RATE_LIMIT_PER_MINUTE):
+            self._json(429, {"error": "Muitas solicitações. Aguarde um instante e tente novamente."}, {"Retry-After": "30"})
+            return True
+        return False
+
+    def _health(self, ready):
+        if not ready:
+            self._json(200, {"status": "ok"})
+            return
+        try:
+            with DATA_LOCK:
+                load_data()
+            self._json(200, {"status": "ready", "database": "postgresql" if DATABASE_URL else "arquivo"})
+        except Exception:
+            self._json(503, {"status": "unavailable"})
 
     def do_GET(self):
         parsed = urlsplit(self.path)
         parsed = parsed._replace(path=canonical_api_path(parsed.path))
+        if parsed.path in {"/healthz", "/readyz"}:
+            self._health(parsed.path == "/readyz")
+            return
+        if self._throttled():
+            return
         if parsed.path == "/api/auth/me":
             self._auth_me()
         elif parsed.path == "/api/admin/overview":
@@ -728,6 +983,8 @@ class AppHandler(BaseHTTPRequestHandler):
             self._search_real_professionals(parse_qs(parsed.query))
         elif parsed.path == "/api/professionals":
             self._list_professionals(parse_qs(parsed.query))
+        elif re.fullmatch(r"/api/professionals/[^/]+/availability", parsed.path):
+            self._availability(parsed.path.split("/")[-2], parse_qs(parsed.query))
         elif re.fullmatch(r"/api/professionals/[^/]+/edit", parsed.path):
             self._get_professional_for_edit(parsed.path.split("/")[-2])
         elif parsed.path.startswith("/api/professionals/"):
@@ -750,6 +1007,8 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "Página não encontrada."})
 
     def do_POST(self):
+        if self._throttled():
+            return
         parsed = urlsplit(self.path)
         parsed = parsed._replace(path=canonical_api_path(parsed.path))
         try:
@@ -758,6 +1017,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._auth_login(data)
             elif parsed.path == "/api/auth/logout":
                 self._auth_logout()
+            elif parsed.path == "/api/privacy/requests":
+                self._create_privacy_request(data)
             elif parsed.path == "/api/professionals":
                 self._create_professional(data)
             elif parsed.path == "/api/professional/transactions":
@@ -790,6 +1051,8 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(500, {"error": str(error)})
 
     def do_PUT(self):
+        if self._throttled():
+            return
         parsed = urlsplit(self.path)
         parsed = parsed._replace(path=canonical_api_path(parsed.path))
         match = re.fullmatch(r"/api/professionals/([^/]+)", parsed.path)
@@ -805,10 +1068,12 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(500, {"error": str(error)})
 
     def do_PATCH(self):
+        if self._throttled():
+            return
         parsed = urlsplit(self.path)
         parsed = parsed._replace(path=canonical_api_path(parsed.path))
         match = re.fullmatch(r"/api/bookings/([^/]+)/status", parsed.path)
-        admin_match = re.fullmatch(r"/api/admin/(professionals|users)/([^/]+)/status", parsed.path)
+        admin_match = re.fullmatch(r"/api/admin/(professionals|users|privacy)/([^/]+)/status", parsed.path)
         if not match and not admin_match:
             self._json(404, {"error": "Operação não encontrada."})
             return
@@ -1245,7 +1510,7 @@ class AppHandler(BaseHTTPRequestHandler):
         self._json(
             201,
             {"professional": public_professional(professional), "user": public_user(user, professional)},
-            {"Set-Cookie": f"{SESSION_COOKIE}={session_token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL_SECONDS}"},
+            {"Set-Cookie": f"{SESSION_COOKIE}={session_token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL_SECONDS}{COOKIE_FLAGS}"},
         )
 
     def _update_professional(self, professional_id, data):
@@ -1289,6 +1554,33 @@ class AppHandler(BaseHTTPRequestHandler):
             save_data(stored)
         self._json(200, {"professional": public_professional(updated)})
 
+    def _availability(self, professional_id, query):
+        day = query.get("date", [""])[0]
+        service_name = query.get("service", [""])[0]
+        try:
+            parsed_day = date.fromisoformat(day)
+        except ValueError:
+            self._json(400, {"error": "Informe uma data válida."})
+            return
+        if parsed_day < business_now().date() or parsed_day > business_now().date() + timedelta(days=180):
+            self._json(200, {"date": day, "times": []})
+            return
+        try:
+            stored = load_data()
+        except RuntimeError as error:
+            self._json(500, {"error": str(error)})
+            return
+        professional = next((item for item in stored["professionals"] if item["id"] == professional_id), None)
+        if not professional or professional.get("demo") or professional.get("status") == "paused":
+            self._json(404, {"error": "Profissional não encontrado."})
+            return
+        service = next((item for item in professional.get("services", []) if item.get("name") == service_name), None)
+        if service is None:
+            self._json(400, {"error": "Escolha um serviço deste profissional."})
+            return
+        times = available_start_times(stored["bookings"], professional_id, day, service_minutes(service))
+        self._json(200, {"date": day, "duration": service_minutes(service), "times": times})
+
     def _create_booking(self, data):
         fields = ("professionalId", "customerName", "customerPhone", "date", "time", "serviceName")
         if any(not isinstance(data.get(field), str) or not data[field].strip() for field in fields):
@@ -1302,9 +1594,10 @@ class AppHandler(BaseHTTPRequestHandler):
             price = float(data.get("price", ""))
         except (ValueError, TypeError):
             raise ValueError("Informe uma data e um preço válidos.") from None
-        if booking_date < date.today():
+        data["date"] = booking_date.isoformat()
+        if booking_date < business_now().date():
             raise ValueError("Escolha uma data de hoje ou futura.")
-        if not re.fullmatch(r"(09|10|11|13|14|15|16|17):00", data["time"]):
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", data["time"]):
             raise ValueError("Escolha um dos horários disponíveis.")
         if not math.isfinite(price) or price <= 0:
             raise ValueError("O preço do serviço é inválido.")
@@ -1324,21 +1617,23 @@ class AppHandler(BaseHTTPRequestHandler):
             if service is None or not math.isclose(float(service["price"]), price, rel_tol=0, abs_tol=0.01):
                 self._json(400, {"error": "O serviço escolhido não pertence a este perfil ou teve o preço alterado."})
                 return
-            occupied = any(
-                booking.get("professionalId") == professional["id"]
-                and booking.get("date") == data["date"]
-                and booking.get("time") == data["time"]
-                and booking.get("status") in ("solicitado", "confirmado")
-                for booking in stored["bookings"]
+            duration = service_minutes(service)
+            free_times = available_start_times(
+                stored["bookings"], professional["id"], data["date"], duration,
             )
-            if occupied:
-                self._json(409, {"error": "Este horário já foi solicitado. Escolha outro horário."})
+            if data["time"] not in free_times:
+                self._json(409, {"error": "Este horário não está mais disponível para a duração do serviço. Escolha outro horário."})
+                return
+            booking_id = uuid.uuid4().hex[:8].upper()
+            if not reserve_booking_slots(professional["id"], data["date"], data["time"], duration, booking_id):
+                self._json(409, {"error": "Este horário acabou de ser reservado. Escolha outro horário."})
                 return
             booking = {
-                "id": uuid.uuid4().hex[:8].upper(), "professionalId": professional["id"],
+                "id": booking_id, "professionalId": professional["id"],
                 "professionalName": professional["name"], "customerName": data["customerName"].strip()[:100],
                 "customerEmail": email, "customerPhone": data["customerPhone"].strip()[:30],
                 "date": data["date"], "time": data["time"], "serviceName": data["serviceName"].strip()[:100],
+                "duration": duration,
                 "price": price, "status": "solicitado", "review": False,
                 "paymentMode": "demo", "paymentStatus": "demo_pending",
                 "paymentDestination": "clickbeleza", "paymentMethod": None,
@@ -1346,7 +1641,11 @@ class AppHandler(BaseHTTPRequestHandler):
             customer_token = secrets.token_urlsafe(32)
             booking["customerTokenHash"] = token_hash(customer_token)
             stored["bookings"].append(booking)
-            save_data(stored)
+            try:
+                save_data(stored)
+            except RuntimeError:
+                release_booking_slots(booking_id)
+                raise
         self._json(201, {"booking": public_booking(booking), "customerToken": customer_token})
 
     def _authorize_booking(self, booking, customer_token):
@@ -1563,7 +1862,43 @@ class AppHandler(BaseHTTPRequestHandler):
             "partners": partners,
             "users": [public_user(item) for item in data["users"]],
             "clients": sorted(clients_by_key.values(), key=lambda item: item["name"].casefold()),
+            "privacyRequests": sorted(data["privacyRequests"], key=lambda item: item["createdAt"], reverse=True),
         })
+
+    def _create_privacy_request(self, data):
+        if rate_limited(("privacy", client_ip(self)), 5, 3600):
+            self._json(429, {"error": "Limite de solicitações atingido. Tente novamente mais tarde."})
+            return
+        kind = data.get("type")
+        if kind not in PRIVACY_REQUEST_TYPES:
+            raise ValueError("Escolha o tipo da solicitação.")
+        name = data.get("name")
+        contact = data.get("contact")
+        message = data.get("message")
+        if not all(isinstance(value, str) for value in (name, contact, message)):
+            raise ValueError("Preencha nome, contato e mensagem.")
+        name, contact, message = name.strip(), contact.strip(), message.strip()
+        if not (2 <= len(name) <= 120):
+            raise ValueError("Informe seu nome.")
+        if not (5 <= len(contact) <= 160) or not (re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", contact) or len(re.sub(r"\D", "", contact)) >= 10):
+            raise ValueError("Informe um e-mail ou telefone válido para retorno.")
+        if not (10 <= len(message) <= 2000):
+            raise ValueError("Descreva a solicitação com 10 a 2000 caracteres.")
+        protocol = f"CB-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(3).upper()}"
+        with DATA_LOCK:
+            stored = load_data()
+            stored["privacyRequests"].append({
+                "id": uuid.uuid4().hex,
+                "protocol": protocol,
+                "type": kind,
+                "name": name,
+                "contact": contact,
+                "message": message,
+                "status": "aberta",
+                "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            })
+            save_data(stored)
+        self._json(201, {"protocol": protocol, "message": f"Solicitação registrada. Guarde o protocolo {protocol}."})
 
     def _admin_update_status(self, kind, record_id, data):
         if not self._require_user({"admin"}):
@@ -1579,6 +1914,17 @@ class AppHandler(BaseHTTPRequestHandler):
                     self._json(404, {"error": "Perfil profissional não encontrado."})
                     return
                 record["status"] = status
+                response = {"status": status}
+            elif kind == "privacy":
+                status = data.get("status")
+                if status not in {"aberta", "em_andamento", "concluida"}:
+                    raise ValueError("Escolha um status válido para a solicitação.")
+                record = next((item for item in stored["privacyRequests"] if item["id"] == record_id), None)
+                if not record:
+                    self._json(404, {"error": "Solicitação não encontrada."})
+                    return
+                record["status"] = status
+                record["updatedAt"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 response = {"status": status}
             else:
                 active = data.get("active")
@@ -1625,6 +1971,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 raise ValueError("Esta mudança de status não é permitida.")
             booking["status"] = status
             save_data(stored)
+            if status == "cancelado":
+                release_booking_slots(booking["id"])
         self._json(200, {"booking": public_booking(booking)})
 
     def _create_review(self, booking_id, data):
@@ -1839,17 +2187,63 @@ class AppHandler(BaseHTTPRequestHandler):
         self._json(200, {"status": partner["status"]})
 
     def log_message(self, format_string, *args):
-        print(f"[{self.log_date_time_string()}] {format_string % args}")
+        print(json.dumps({
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "ip": client_ip(self),
+            "msg": (format_string % args)[:300],
+        }, ensure_ascii=False), flush=True)
 
 
-if __name__ == "__main__":
-    server = ThreadingHTTPServer((HOST, PORT), AppHandler)
-    print(f"Click Beleza local: http://{HOST}:{PORT}")
-    print("Protótipo com acesso por função; não exponha na internet nem use dados pessoais reais.")
-    print("Pressione Ctrl+C para encerrar.")
+def backfill_booking_slots():
+    """Migração: cria faixas para agendamentos ativos que existiam antes da tabela booking_slots."""
+    if not DATABASE_URL:
+        return 0
+    created = 0
+    with DATA_LOCK:
+        for booking in load_data()["bookings"]:
+            if booking.get("status") not in ACTIVE_BOOKING_STATUSES:
+                continue
+            try:
+                duration = int(booking.get("duration") or DEFAULT_SERVICE_MINUTES)
+                with psycopg.connect(DATABASE_URL, connect_timeout=5) as connection:
+                    exists = connection.execute(
+                        "SELECT 1 FROM booking_slots WHERE booking_id = %s LIMIT 1", (booking["id"],)
+                    ).fetchone()
+                if not exists and reserve_booking_slots(
+                    booking["professionalId"], booking["date"], booking["time"], duration, booking["id"],
+                ):
+                    created += 1
+            except (KeyError, ValueError, psycopg.Error) as error:
+                print(f"Agendamento {booking.get('id')} não migrado: {error}")
+    return created
+
+
+class ProductionServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 128
+
+
+def serve():
+    import signal
+
+    migrated = backfill_booking_slots()
+    if DATABASE_URL:
+        print(f"Faixas de horário migradas: {migrated}", flush=True)
+    server = ProductionServer((HOST, PORT), AppHandler)
+    print(f"Click Beleza em http://{HOST}:{PORT}", flush=True)
+
+    def stop(*_):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, stop)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nServidor encerrado.")
+        pass
     finally:
         server.server_close()
+        print("Servidor encerrado.", flush=True)
+
+
+if __name__ == "__main__":
+    serve()

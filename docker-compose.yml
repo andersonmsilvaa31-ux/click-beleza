@@ -1,0 +1,65 @@
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: click_beleza
+      POSTGRES_USER: click_beleza_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U click_beleza_app -d click_beleza"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CLICK_BELEZA_DATABASE_URL: postgresql://click_beleza_app:${POSTGRES_PASSWORD}@db:5432/click_beleza
+      CLICK_BELEZA_SECURE: "true"
+      CLICK_BELEZA_TRUST_PROXY: "true"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?defina SITE_DOMAIN no .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  backup:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CLICK_BELEZA_DATABASE_URL: postgresql://click_beleza_app:${POSTGRES_PASSWORD}@db:5432/click_beleza
+    volumes:
+      - ./backups:/app/backups
+    entrypoint: ["sh", "-c", "while true; do python scripts/backup_db.py; find backups -name '*.backup.json' -mtime +14 -delete; sleep 86400; done"]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

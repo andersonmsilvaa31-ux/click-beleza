@@ -254,6 +254,7 @@ function initAdminDashboard() {
   const partnerList = document.getElementById("admin-partner-list");
   const userList = document.getElementById("admin-user-list");
   const clientList = document.getElementById("admin-client-list");
+  const privacyList = document.getElementById("admin-privacy-list");
   const refreshButton = document.getElementById("admin-refresh");
   let overview;
 
@@ -271,6 +272,9 @@ function initAdminDashboard() {
     chatList.innerHTML = overview.chats.length ? overview.chats.map(chat => `<article class="admin-row admin-chat-row"><div><h3>${escapeHtml(chat.customerName)} · ${escapeHtml(chat.professionalName)}</h3><div class="chat-log">${chatBubbles(chat.messages, "professional")}</div><form class="chat-reply" data-admin-chat="${escapeHtml(chat.id)}"><input name="text" required maxlength="1000" placeholder="Responder conversa"><button class="button button-small" type="submit">Responder</button></form></div></article>`).join("") : '<p class="empty-state">Nenhuma conversa.</p>';
     clientList.innerHTML = overview.clients.length ? overview.clients.map(client => `<article class="admin-row"><div><h3>${escapeHtml(client.name || "Cliente")}</h3><p>${escapeHtml([client.email, client.phone].filter(Boolean).join(" · ") || "Contato registrado em conversa")}</p></div><div class="client-activity"><span>${client.bookings} ${client.bookings === 1 ? "pedido" : "pedidos"}</span><span>${client.conversations} ${client.conversations === 1 ? "conversa" : "conversas"}</span></div></article>`).join("") : '<p class="empty-state">Os clientes aparecerão quando houver pedidos ou conversas.</p>';
     partnerList.innerHTML = overview.partners.length ? overview.partners.map(item => `<article class="admin-row"><div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.category)} · ${escapeHtml(item.plan)} · ${escapeHtml(item.email || "")} · ${escapeHtml(item.phone || "")}</p><small>${escapeHtml(item.clicks || 0)} cliques · <span class="admin-status ${item.status === "paused" ? "paused" : ""}">${escapeHtml(item.status)}</span></small></div><div class="admin-row-actions"><button class="button button-small" data-partner-id="${escapeHtml(item.id)}" data-partner-action="${item.status === "paused" ? "activate" : "pause"}">${item.status === "paused" ? "Ativar" : "Pausar"}</button></div></article>`).join("") : '<p class="empty-state">Nenhum anúncio.</p>';
+    const privacyLabels = { acesso: "Acesso", correcao: "Correção", exclusao: "Exclusão", reclamacao: "Reclamação" };
+    const privacyStatus = { aberta: "Aberta", em_andamento: "Em andamento", concluida: "Concluída" };
+    privacyList.innerHTML = overview.privacyRequests.length ? overview.privacyRequests.map(item => `<article class="admin-row"><div><h3>${escapeHtml(item.protocol)} · ${escapeHtml(privacyLabels[item.type] || item.type)}</h3><p>${escapeHtml(item.name)} · ${escapeHtml(item.contact)}</p><small>${escapeHtml(item.message)}</small><span class="admin-status ${item.status === "concluida" ? "" : "paused"}">${escapeHtml(privacyStatus[item.status] || item.status)}</span></div><div class="admin-row-actions">${item.status === "aberta" ? `<button class="button button-small" data-privacy-id="${escapeHtml(item.id)}" data-privacy-status="em_andamento">Iniciar</button>` : ""}${item.status !== "concluida" ? `<button class="button button-outline button-small" data-privacy-id="${escapeHtml(item.id)}" data-privacy-status="concluida">Concluir</button>` : ""}</div></article>`).join("") : '<p class="empty-state">Nenhuma solicitação.</p>';
     userList.innerHTML = overview.users.length ? overview.users.map(item => `<article class="admin-row"><div><h3>${escapeHtml(item.email)}</h3><p>${item.role === "admin" ? "Administrador" : "Profissional"} · ${item.active ? "Ativa" : "Desativada"}</p></div>${item.role === "professional" ? `<div class="admin-row-actions"><button class="button button-small" data-user-id="${escapeHtml(item.id)}" data-user-active="${String(!item.active)}">${item.active ? "Desativar conta" : "Reativar conta"}</button></div>` : ""}</article>`).join("") : '<p class="empty-state">Nenhuma conta.</p>';
   }
 
@@ -315,6 +319,8 @@ function initAdminDashboard() {
         await chamarAPI(`admin/professionals/${encodeURIComponent(button.dataset.profileId)}/status`, { method: "PATCH", body: JSON.stringify({ status: button.dataset.profileStatus }) });
       } else if (button.dataset.partnerId) {
         await chamarAPI("partners/manage", { method: "POST", body: JSON.stringify({ partnerId: button.dataset.partnerId, action: button.dataset.partnerAction }) });
+      } else if (button.dataset.privacyId) {
+        await chamarAPI(`admin/privacy/${encodeURIComponent(button.dataset.privacyId)}/status`, { method: "PATCH", body: JSON.stringify({ status: button.dataset.privacyStatus }) });
       } else if (button.dataset.userId) {
         await chamarAPI(`admin/users/${encodeURIComponent(button.dataset.userId)}/status`, { method: "PATCH", body: JSON.stringify({ active: button.dataset.userActive === "true" }) });
       } else {

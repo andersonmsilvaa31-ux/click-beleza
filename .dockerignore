@@ -1,0 +1,9 @@
+.git
+.vscode
+__pycache__
+backups
+tests
+*.zip
+*.backup.json
+.env
+desktop.ini

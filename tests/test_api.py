@@ -1,13 +1,15 @@
 import copy
 import http.cookiejar
 import json
+import os
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, timedelta
+import uuid
+from datetime import date, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -42,6 +44,7 @@ class ApiIntegrationTests(unittest.TestCase):
         backend.DATA_FILE = Path(self.temporary_directory.name) / "data.json"
         backend.DATABASE_URL = None
         backend.clear_caches()
+        backend.RATE_HITS.clear()
         professional = copy.deepcopy(backend.SAMPLE_PROFESSIONALS[0])
         professional.update({
             "id": "test-professional",
@@ -67,6 +70,45 @@ class ApiIntegrationTests(unittest.TestCase):
         backend.DATA_FILE = self.original_data_file
         backend.DATABASE_URL = self.original_database_url
         self.temporary_directory.cleanup()
+
+    def test_privacy_requests_are_public_validated_and_admin_managed(self):
+        status, _ = self.post_json("/api/privacy/requests", {"type": "hack", "name": "Ana", "contact": "a@b.com", "message": "mensagem valida aqui"})
+        self.assertEqual(status, 400)
+        status, _ = self.post_json("/api/privacy/requests", {"type": "exclusao", "name": "Ana", "contact": "x", "message": "mensagem valida aqui"})
+        self.assertEqual(status, 400)
+        status, body = self.post_json("/api/privacy/requests", {"type": "exclusao", "name": "Ana", "contact": "ana@example.com", "message": "Quero excluir meus dados."})
+        self.assertEqual(status, 201)
+        self.assertTrue(body["protocol"].startswith("CB-"))
+        self.assertEqual(self.get_json("/api/admin/overview")[0], 401)
+        self.create_user("admin")
+        self.assertEqual(self.authenticated_request("/api/auth/login", "POST", {"identifier": "admin@example.com", "password": "test-password-123"})[0], 200)
+        status, overview = self.authenticated_request("/api/admin/overview")
+        self.assertEqual(status, 200)
+        request_id = overview["privacyRequests"][0]["id"]
+        status, _ = self.authenticated_request(f"/api/admin/privacy/{request_id}/status", "PATCH", {"status": "concluida"})
+        self.assertEqual(status, 200)
+        status, _ = self.authenticated_request(f"/api/admin/privacy/{request_id}/status", "PATCH", {"status": "x"})
+        self.assertEqual(status, 400)
+        for _ in range(5):
+            status, _ = self.post_json("/api/privacy/requests", {"type": "acesso", "name": "Ana", "contact": "ana@example.com", "message": "Quero acessar meus dados."})
+        self.assertEqual(status, 429)
+
+    def test_security_headers_health_and_rate_limit(self):
+        with urllib.request.urlopen(self.base_url + "/", timeout=5) as response:
+            self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+            self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+            self.assertIn("camera=()", response.headers["Permissions-Policy"])
+        self.assertEqual(self.get_json("/healthz")[0], 200)
+        status, body = self.get_json("/readyz")
+        self.assertEqual((status, body["status"]), (200, "ready"))
+        original = backend.RATE_LIMIT_PER_MINUTE
+        backend.RATE_LIMIT_PER_MINUTE = 3
+        try:
+            codes = [self.get_json("/api/professionals")[0] for _ in range(6)]
+        finally:
+            backend.RATE_LIMIT_PER_MINUTE = original
+        self.assertIn(429, codes)
+        self.assertEqual(self.get_json("/healthz")[0], 200)
 
     def get_json(self, path):
         try:
@@ -421,7 +463,7 @@ class ApiIntegrationTests(unittest.TestCase):
         status, overview = self.authenticated_request("/api/admin/overview")
 
         self.assertEqual(status, 200)
-        self.assertEqual(set(overview), {"professionals", "bookings", "chats", "partners", "users", "clients"})
+        self.assertEqual(set(overview), {"professionals", "bookings", "chats", "partners", "users", "clients", "privacyRequests"})
         self.assertTrue(overview["professionals"])
         self.assertNotIn("passwordHash", overview["users"][0])
         self.assertEqual(len(overview["clients"]), 1)
@@ -667,6 +709,174 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.authenticated_request("/api/professional/transactions")[0], 403)
 
+    def test_concurrent_bookings_logins_and_payments_do_not_lose_or_duplicate_data(self):
+        self.create_user("professional", "test-professional")
+        service = backend.load_data()["professionals"][0]["services"][0]
+        day = (date.today() + timedelta(days=3)).isoformat()
+
+        def book(time_slot, number):
+            return self.post_json("/api/bookings", {
+                "professionalId": "test-professional", "customerName": f"Cliente {number}",
+                "customerPhone": "11999999999", "date": day, "time": time_slot,
+                "serviceName": service["name"], "price": service["price"],
+            })
+
+        def login(_):
+            return self.post_json(
+                "/api/auth/login",
+                {"identifier": "professional@example.com", "password": "test-password-123"},
+            )[0]
+
+        same_slot = []
+        threads = [threading.Thread(target=lambda n=n: same_slot.append(book("09:00", n)[0])) for n in range(12)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(same_slot), [201] + [409] * 11)
+
+        results = {}
+        slots = ["10:00", "11:00", "13:00", "14:00", "15:00", "16:00", "17:00"]
+        workers = [threading.Thread(target=lambda n=n: results.__setitem__(f"login{n}", login(n))) for n in range(6)]
+        workers += [
+            threading.Thread(target=lambda s=s, n=n: results.__setitem__(s, book(s, n)))
+            for n, s in enumerate(slots)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        self.assertTrue(all(results[f"login{n}"] == 200 for n in range(6)))
+        created = [results[s] for s in slots if results[s][0] == 201]
+        self.assertEqual(len(created), len(slots))
+        self.assertEqual(len(backend.load_data()["bookings"]), len(slots) + 1)
+
+        booking, token = created[0][1]["booking"]["id"], created[0][1]["customerToken"]
+        payments = []
+        workers = [
+            threading.Thread(target=lambda: payments.append(self.post_json(
+                f"/api/bookings/{booking}/payment", {"customerToken": token, "paymentMethod": "pix"})[0]))
+            for _ in range(8)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        self.assertEqual(set(payments), {200})
+        stored = next(item for item in backend.load_data()["bookings"] if item["id"] == booking)
+        self.assertEqual(stored["paymentStatus"], "demo_completed")
+
+    def test_permission_matrix_blocks_anonymous_customers_and_other_professionals(self):
+        other = copy.deepcopy(backend.SAMPLE_PROFESSIONALS[0])
+        other.update({"id": "other-professional", "demo": False, "name": "Outro"})
+        data = backend.load_data()
+        data["professionals"].append(other)
+        backend.save_data(data)
+        self.create_user("professional", "other-professional", "other@example.com")
+        service = data["professionals"][0]["services"][0]
+        _, created = self.post_json("/api/bookings", {
+            "professionalId": "test-professional", "customerName": "Cliente", "customerPhone": "11999999999",
+            "date": (date.today() + timedelta(days=2)).isoformat(), "time": "10:00",
+            "serviceName": service["name"], "price": service["price"],
+        })
+        booking_id = created["booking"]["id"]
+        _, chat = self.post_json("/api/chats", {
+            "professionalId": "test-professional", "customerName": "Cliente", "text": "Olá",
+        })
+        chat_id = chat["chat"]["id"]
+
+        for path in ("/api/bookings", "/api/chats", "/api/admin/overview", "/api/professional/transactions"):
+            self.assertEqual(self.get_json(path)[0], 401, path)
+        self.assertEqual(self.get_json(f"/api/chats/{chat_id}")[0], 404)
+        self.assertEqual(self.post_json(f"/api/bookings/{booking_id}/access", {})[0], 401)
+        self.assertEqual(self.post_json(f"/api/bookings/{booking_id}/access", {"customerToken": "x" * 40})[0], 401)
+        self.assertEqual(self.post_json(f"/api/chats/{chat_id}/reply", {"text": "oi"})[0], 401)
+        self.assertEqual(self.post_json("/api/chats/%s/messages" % chat_id, {"text": "oi", "token": "x"})[0], 404)
+
+        status, _ = self.authenticated_request(
+            "/api/auth/login", "POST", {"identifier": "other@example.com", "password": "test-password-123"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.authenticated_request("/api/bookings")[1]["bookings"], [])
+        self.assertEqual(self.authenticated_request("/api/chats")[1]["chats"], [])
+        self.assertEqual(self.authenticated_request(f"/api/chats/{chat_id}")[0], 404)
+        self.assertEqual(self.authenticated_request(f"/api/bookings/{booking_id}/access", "POST", {})[0], 403)
+        self.assertEqual(
+            self.authenticated_request(f"/api/bookings/{booking_id}/status", "PATCH", {"status": "confirmado"})[0], 403
+        )
+        self.assertEqual(
+            self.authenticated_request(f"/api/chats/{chat_id}/reply", "POST", {"text": "invasão"})[0], 404
+        )
+        self.assertEqual(self.authenticated_request("/api/admin/overview")[0], 403)
+        self.assertEqual(
+            self.authenticated_request("/api/professionals/test-professional", "PUT", {"name": "Invasor"})[0] in (401, 403, 404),
+            True,
+        )
+        self.assertEqual(backend.load_data()["bookings"][0]["status"], "solicitado")
+
+    def test_schedule_respects_duration_overlap_lunch_cancellation_and_brasilia_time(self):
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        services = {item["name"]: item for item in backend.load_data()["professionals"][0]["services"]}
+        long_service, short_service = services["Corte e barba"], services["Corte masculino"]
+        self.assertEqual((long_service["duration"], short_service["duration"]), (65, 40))
+
+        def times(service):
+            query = urllib.parse.urlencode({"date": tomorrow, "service": service["name"]})
+            status, body = self.get_json(f"/api/professionals/test-professional/availability?{query}")
+            self.assertEqual(status, 200)
+            self.assertEqual(set(body), {"date", "duration", "times"})
+            return body["times"]
+
+        def book(service, time_slot):
+            return self.post_json("/api/bookings", {
+                "professionalId": "test-professional", "customerName": "Cliente", "customerPhone": "11999999999",
+                "date": tomorrow, "time": time_slot, "serviceName": service["name"], "price": service["price"],
+            })
+
+        free = times(long_service)
+        self.assertIn("10:30", free)
+        self.assertNotIn("11:00", free)  # 11:00 + 65 min invade o almoço
+        self.assertNotIn("12:00", free)
+        self.assertIn("13:00", free)
+        self.assertIn("16:30", free)
+        self.assertNotIn("17:00", free)  # terminaria depois das 18:00
+
+        self.assertEqual(book(long_service, "11:00")[0], 409)
+        self.assertEqual(book(short_service, "12:00")[0], 409)
+        self.assertEqual(book(short_service, "25:99")[0], 400)
+
+        status, first = book(long_service, "10:00")
+        self.assertEqual(status, 201)
+        self.assertEqual(first["booking"]["status"], "solicitado")
+        for blocked in ("09:30", "10:30", "11:00"):
+            self.assertEqual(book(short_service, blocked)[0], 409, blocked)
+        self.assertNotIn("10:30", times(short_service))
+        self.assertEqual(book(short_service, "09:00")[0], 201)
+
+        status, _ = self.authenticated_request(
+            f"/api/bookings/{first['booking']['id']}/status", "PATCH",
+            {"status": "cancelado", "customerToken": first["customerToken"]},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("10:30", times(short_service))
+        self.assertEqual(book(short_service, "10:30")[0], 201)
+
+        query = urllib.parse.urlencode({"date": tomorrow, "service": "Serviço inexistente"})
+        self.assertEqual(self.get_json(f"/api/professionals/test-professional/availability?{query}")[0], 400)
+        self.assertEqual(self.get_json("/api/professionals/nao-existe/availability?date=" + tomorrow + "&service=x")[0], 404)
+        self.assertEqual(self.get_json("/api/professionals/test-professional/availability?date=ontem")[0], 400)
+
+        now = datetime.now(backend.BUSINESS_TZ).replace(hour=14, minute=10, second=0, microsecond=0)
+        with patch.object(backend, "business_now", return_value=now):
+            query = urllib.parse.urlencode({"date": now.date().isoformat(), "service": short_service["name"]})
+            _, today = self.get_json(f"/api/professionals/test-professional/availability?{query}")
+            self.assertEqual(today["times"][0], "14:30")
+            self.assertEqual(book_today := self.post_json("/api/bookings", {
+                "professionalId": "test-professional", "customerName": "Cliente", "customerPhone": "11999999999",
+                "date": now.date().isoformat(), "time": "14:00", "serviceName": short_service["name"],
+                "price": short_service["price"],
+            })[0], 409)
+
     def test_professional_registration_accepts_and_returns_valid_portfolio_media(self):
         png = b"\x89PNG\r\n\x1a\n"
         payload = {
@@ -757,6 +967,107 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 404)
         status, response = self.get_json("/api/cep?cep=123")
         self.assertEqual(status, 400)
+
+@unittest.skipUnless(os.environ.get("CLICK_BELEZA_TEST_DATABASE_URL"), "defina CLICK_BELEZA_TEST_DATABASE_URL para testar o PostgreSQL")
+class PostgresBookingSlotTests(unittest.TestCase):
+    def setUp(self):
+        import psycopg
+        self.psycopg = psycopg
+        self.schema = "cb_test_" + uuid.uuid4().hex[:10]
+        base = os.environ["CLICK_BELEZA_TEST_DATABASE_URL"]
+        with psycopg.connect(base, autocommit=True) as connection:
+            connection.execute(f"CREATE SCHEMA {self.schema}")
+        separator = "&" if "?" in base else "?"
+        self.original_url = backend.DATABASE_URL
+        backend.DATABASE_URL = f"{base}{separator}options=-c%20search_path%3D{self.schema}"
+        self.base_url = base
+
+    def tearDown(self):
+        backend.DATABASE_URL = self.original_url
+        with self.psycopg.connect(self.base_url, autocommit=True) as connection:
+            connection.execute(f"DROP SCHEMA {self.schema} CASCADE")
+
+    def test_database_rejects_overlapping_reservations_even_under_thread_races(self):
+        results = []
+        threads = [
+            threading.Thread(target=lambda n=n: results.append(
+                backend.reserve_booking_slots("pro", "2030-01-10", "10:00", 65, f"B{n}")))
+            for n in range(12)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(results), [False] * 11 + [True])
+        self.assertFalse(backend.reserve_booking_slots("pro", "2030-01-10", "11:00", 40, "OVERLAP"))
+        self.assertTrue(backend.reserve_booking_slots("pro", "2030-01-10", "11:30", 40, "ADJACENT"))
+        self.assertTrue(backend.reserve_booking_slots("other", "2030-01-10", "10:00", 65, "OTHERPRO"))
+        winner = next(n for n in range(12) if self.slot_owner(f"B{n}"))
+        backend.release_booking_slots(f"B{winner}")
+        self.assertTrue(backend.reserve_booking_slots("pro", "2030-01-10", "10:30", 30, "REUSED"))
+
+    def slot_owner(self, booking_id):
+        with self.psycopg.connect(backend.DATABASE_URL) as connection:
+            return connection.execute(
+                "SELECT count(*) FROM booking_slots WHERE booking_id = %s", (booking_id,)
+            ).fetchone()[0]
+
+    def test_data_lock_serializes_across_database_sessions(self):
+        with self.psycopg.connect(backend.DATABASE_URL, autocommit=True) as probe:
+            def free():
+                return probe.execute("SELECT pg_try_advisory_lock(%s)", (backend.DataLock.ADVISORY_KEY,)).fetchone()[0]
+            with backend.DATA_LOCK:
+                with backend.DATA_LOCK:  # reentrante na mesma thread
+                    self.assertFalse(free())
+                self.assertFalse(free())
+            self.assertTrue(free())
+            probe.execute("SELECT pg_advisory_unlock(%s)", (backend.DataLock.ADVISORY_KEY,))
+
+    def test_backfill_protects_bookings_created_before_the_slots_table(self):
+        professional = copy.deepcopy(backend.SAMPLE_PROFESSIONALS[0])
+        professional.update({"id": "old-pro", "demo": False})
+        old = {"id": "OLD1", "professionalId": "old-pro", "date": "2030-03-01", "time": "14:00",
+               "duration": 60, "status": "confirmado"}
+        cancelled = {**old, "id": "OLD2", "time": "16:00", "status": "cancelado"}
+        backend.save_data({"professionals": [professional], "bookings": [old, cancelled]})
+        self.assertEqual(backend.backfill_booking_slots(), 1)
+        self.assertEqual(backend.backfill_booking_slots(), 0)  # idempotente
+        self.assertFalse(backend.reserve_booking_slots("old-pro", "2030-03-01", "14:30", 30, "NEW"))
+        self.assertTrue(backend.reserve_booking_slots("old-pro", "2030-03-01", "16:00", 30, "NEW2"))
+
+    def test_booking_api_persists_slots_and_frees_them_on_cancel(self):
+        professional = copy.deepcopy(backend.SAMPLE_PROFESSIONALS[0])
+        professional.update({"id": "db-pro", "demo": False})
+        backend.save_data({"professionals": [professional], "bookings": []})
+        server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}"
+        service = professional["services"][0]
+        day = (date.today() + timedelta(days=2)).isoformat()
+
+        def request(path, payload, method="POST"):
+            req = urllib.request.Request(base + path, data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"}, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    return response.status, json.load(response)
+            except urllib.error.HTTPError as error:
+                return error.code, json.load(error)
+
+        order = {"professionalId": "db-pro", "customerName": "Ana", "customerPhone": "11999999999",
+                 "date": day, "time": "10:00", "serviceName": service["name"], "price": service["price"]}
+        status, created = request("/api/bookings", order)
+        self.assertEqual(status, 201)
+        self.assertEqual(request("/api/bookings", order)[0], 409)
+        self.assertGreater(self.slot_owner(created["booking"]["id"]), 0)
+        status, _ = request(f"/api/bookings/{created['booking']['id']}/status",
+                            {"status": "cancelado", "customerToken": created["customerToken"]}, "PATCH")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.slot_owner(created["booking"]["id"]), 0)
+        self.assertEqual(request("/api/bookings", order)[0], 201)
+
 
 if __name__ == "__main__":
     unittest.main()
