@@ -1081,7 +1081,12 @@ class AppHandler(BaseHTTPRequestHandler):
             self._list_bookings()
         elif parsed.path == "/api/professional/transactions":
             self._list_professional_transactions()
+        elif parsed.path == "/api/professional/payments":
+            self._professional_payment_status()
+        elif parsed.path == "/api/payments/oauth/callback":
+            self._payment_oauth_callback(parse_qs(parsed.query))
         elif parsed.path in STATIC_FILES:
+            self._serve_static(parsed.path)
             self._serve_static(parsed.path)
         else:
             self._json(404, {"error": "Página não encontrada."})
@@ -1101,6 +1106,10 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._create_privacy_request(data)
             elif parsed.path == "/api/professionals":
                 self._create_professional(data)
+            elif parsed.path == "/api/professional/payments/connect":
+                self._professional_payment_connect()
+            elif parsed.path == "/api/professional/payments/disconnect":
+                self._professional_payment_disconnect()
             elif parsed.path == "/api/professional/transactions":
                 self._create_professional_transaction(data)
             elif parsed.path == "/api/bookings":
@@ -1808,10 +1817,114 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(200, {"booking": public_booking(booking)})
 
     def _seller_tokens(self, stored, professional_id=None):
-        return [
-            user["mpSellerToken"] for user in stored["users"]
-            if user.get("mpSellerToken") and (professional_id is None or user.get("professionalId") == professional_id)
-        ]
+        tokens = []
+        for user in stored["users"]:
+            seller = user.get("mpSeller")
+            if seller and (professional_id is None or user.get("professionalId") == professional_id):
+                token = payments.decrypt(seller.get("token"))
+                if token:
+                    tokens.append(token)
+        return tokens
+
+    def _fresh_seller_token(self, professional_id):
+        """Token do profissional conectado, renovando-o quando faltar menos de 7 dias para expirar."""
+        with DATA_LOCK:
+            stored = load_data()
+            user = next((u for u in stored["users"] if u.get("professionalId") == professional_id and u.get("mpSeller")), None)
+            record = dict(user["mpSeller"]) if user else None
+        if not record:
+            return None
+        if record.get("expiresAt", 0) - time.time() < 7 * 86400:
+            try:
+                record = payments.refresh_seller(record)
+            except payments.PaymentError:
+                return None
+            with DATA_LOCK:
+                stored = load_data()
+                current = next((u for u in stored["users"] if u["id"] == user["id"]), None)
+                if current:
+                    current["mpSeller"] = record
+                    save_data(stored)
+        return payments.decrypt(record.get("token"))
+
+    def _professional_payment_status(self):
+        user = self._require_user({"professional"})
+        if not user:
+            return
+        seller = user.get("mpSeller") or {}
+        self._json(200, {
+            "gatewayEnabled": payments.enabled(), "connectionAvailable": payments.oauth_enabled(),
+            "connected": bool(seller), "connectedAt": seller.get("connectedAt"),
+            "feePercent": payments.fee_percent(),
+        })
+
+    def _professional_payment_connect(self):
+        user = self._require_user({"professional"})
+        if not user:
+            return
+        if not payments.oauth_enabled():
+            self._json(503, {"error": "A conexão com o Mercado Pago ainda não está habilitada neste ambiente."})
+            return
+        nonce = secrets.token_urlsafe(16)
+        with DATA_LOCK:
+            stored = load_data()
+            current = next((u for u in stored["users"] if u["id"] == user["id"]), None)
+            if not current:
+                self._json(404, {"error": "Conta não encontrada."})
+                return
+            current["mpOauthNonce"] = token_hash(nonce)
+            save_data(stored)
+        self._json(200, {"url": payments.authorization_url(payments.make_state(user["id"], nonce))})
+
+    def _professional_payment_disconnect(self):
+        user = self._require_user({"professional"})
+        if not user:
+            return
+        with DATA_LOCK:
+            stored = load_data()
+            current = next((u for u in stored["users"] if u["id"] == user["id"]), None)
+            if current:
+                current.pop("mpSeller", None)
+                current.pop("mpOauthNonce", None)
+                save_data(stored)
+        self._json(200, {"connected": False})
+
+    def _payment_oauth_callback(self, query):
+        def back(result):
+            self.send_response(302)
+            self.send_header("Location", f"/professional-dashboard.html?mp={result}")
+            self._security_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        parsed_state = payments.read_state((query.get("state") or [""])[0]) if payments.oauth_enabled() else None
+        code = (query.get("code") or [""])[0]
+        if not parsed_state or not code or len(code) > 200:
+            back("erro")
+            return
+        user_id, nonce = parsed_state
+        with DATA_LOCK:
+            stored = load_data()
+            user = next((u for u in stored["users"] if u["id"] == user_id and u.get("role") == "professional"), None)
+            valid = bool(user and user.get("mpOauthNonce") and secrets.compare_digest(user["mpOauthNonce"], token_hash(nonce)))
+            if valid:
+                user.pop("mpOauthNonce", None)  # o retorno só vale uma vez
+                save_data(stored)
+        if not valid:
+            back("erro")
+            return
+        try:
+            record = payments.exchange_code(code)
+        except payments.PaymentError:
+            back("erro")
+            return
+        with DATA_LOCK:
+            stored = load_data()
+            user = next((u for u in stored["users"] if u["id"] == user_id), None)
+            if user:
+                user["mpSeller"] = record
+                save_data(stored)
+        back("ok")
 
     def _create_checkout(self, booking_id, data):
         if not payments.enabled():
@@ -1831,8 +1944,8 @@ class AppHandler(BaseHTTPRequestHandler):
             if booking.get("status") not in {"solicitado", "confirmado"} or booking.get("paymentStatus") not in {"pending", "failed"}:
                 self._json(409, {"error": "Este pedido não aceita uma nova cobrança."})
                 return
-            seller = next(iter(self._seller_tokens(stored, booking["professionalId"])), None)
             snapshot = dict(booking)
+        seller = self._fresh_seller_token(snapshot["professionalId"])
         try:
             preference = payments.create_preference(snapshot, seller)
         except payments.PaymentError as error:
@@ -1904,7 +2017,9 @@ class AppHandler(BaseHTTPRequestHandler):
             if not booking or booking.get("paymentStatus") not in {"paid", "refund_failed"}:
                 return None
             payment_id = booking.get("paymentId")
-            seller = next(iter(self._seller_tokens(stored, booking["professionalId"])), None) if booking.get("paymentSplit") else None
+            split = bool(booking.get("paymentSplit"))
+            professional_id = booking["professionalId"]
+        seller = self._fresh_seller_token(professional_id) if split else None
         try:
             payments.refund_payment(payment_id, booking_id, seller)
             outcome = "refunded"

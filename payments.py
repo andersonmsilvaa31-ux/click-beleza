@@ -126,3 +126,109 @@ def verify_signature(headers, data_id, secret=None, now=None, tolerance=600):
     manifest = f"id:{str(data_id).lower()};request-id:{headers.get('x-request-id', '')};ts:{timestamp};"
     expected = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, received)
+
+
+# ---- Conexão do profissional (OAuth do Mercado Pago) para repasse automático ----
+OAUTH_AUTH_URL = "https://auth.mercadopago.com/authorization"
+STATE_TTL = 900
+
+
+def client_id():
+    return os.environ.get("CLICK_BELEZA_MP_CLIENT_ID", "").strip()
+
+
+def client_secret():
+    return os.environ.get("CLICK_BELEZA_MP_CLIENT_SECRET", "").strip()
+
+
+def _fernet():
+    key = os.environ.get("CLICK_BELEZA_ENCRYPTION_KEY", "").strip()
+    if not key:
+        return None
+    from cryptography.fernet import Fernet
+    return Fernet(key.encode())
+
+
+def oauth_enabled():
+    return bool(client_id() and client_secret() and public_url().startswith("https://") and _fernet())
+
+
+def encrypt(value):
+    fernet = _fernet()
+    if fernet is None:
+        raise PaymentError("Defina CLICK_BELEZA_ENCRYPTION_KEY para guardar credenciais de forma segura.")
+    return fernet.encrypt(value.encode()).decode()
+
+
+def decrypt(value):
+    fernet = _fernet()
+    if fernet is None or not value:
+        return None
+    from cryptography.fernet import InvalidToken
+    try:
+        return fernet.decrypt(value.encode()).decode()
+    except InvalidToken:
+        return None
+
+
+def redirect_uri():
+    return f"{public_url()}/api/payments/oauth/callback"
+
+
+def make_state(user_id, nonce, now=None):
+    expires = int((now or time.time()) + STATE_TTL)
+    body = f"{user_id}.{nonce}.{expires}"
+    signature = hmac.new(client_secret().encode(), body.encode(), hashlib.sha256).hexdigest()
+    return f"{body}.{signature}"
+
+
+def read_state(state, now=None):
+    """Devolve (user_id, nonce) se a assinatura e o prazo forem válidos; senão None."""
+    parts = str(state or "").split(".")
+    if len(parts) != 4 or not client_secret():
+        return None
+    user_id, nonce, expires, signature = parts
+    expected = hmac.new(client_secret().encode(), f"{user_id}.{nonce}.{expires}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature) or not expires.isdigit() or int(expires) < (now or time.time()):
+        return None
+    return user_id, nonce
+
+
+def authorization_url(state):
+    from urllib.parse import urlencode
+    query = urlencode({"client_id": client_id(), "response_type": "code", "platform_id": "mp",
+                       "state": state, "redirect_uri": redirect_uri()})
+    return f"{OAUTH_AUTH_URL}?{query}"
+
+
+def _seller_record(result):
+    if not result.get("access_token"):
+        raise PaymentError("O Mercado Pago não autorizou a conexão.")
+    return {
+        "token": encrypt(result["access_token"]),
+        "refresh": encrypt(result["refresh_token"]) if result.get("refresh_token") else None,
+        "mpUserId": str(result.get("user_id", "")),
+        "expiresAt": time.time() + int(result.get("expires_in") or 0),
+        "connectedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+def exchange_code(code):
+    result = http("POST", "/oauth/token", client_secret(), {
+        "client_id": client_id(), "client_secret": client_secret(), "grant_type": "authorization_code",
+        "code": code, "redirect_uri": redirect_uri(),
+    })
+    return _seller_record(result)
+
+
+def refresh_seller(record):
+    refresh = decrypt(record.get("refresh"))
+    if not refresh:
+        raise PaymentError("Conexão expirada; o profissional precisa conectar novamente.")
+    result = http("POST", "/oauth/token", client_secret(), {
+        "client_id": client_id(), "client_secret": client_secret(), "grant_type": "refresh_token",
+        "refresh_token": refresh,
+    })
+    renewed = _seller_record(result)
+    renewed["connectedAt"] = record.get("connectedAt", renewed["connectedAt"])
+    return renewed

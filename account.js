@@ -214,6 +214,47 @@ function initProfessionalDashboard() {
     work.innerHTML = `<div class="admin-section-heading"><div><p class="eyebrow">SUA OPERAÇÃO</p><h2>Pedidos e clientes</h2></div><a class="button button-outline button-small" href="/agenda.html">Abrir agenda completa</a></div>
       <div class="admin-stat-grid professional-stat-grid"><div class="admin-stat"><strong>${bookings.length}</strong><span>Seus pedidos</span></div><div class="admin-stat"><strong>${chats.length}</strong><span>Suas conversas</span></div><div class="admin-stat"><strong>${clients.size}</strong><span>Seus clientes</span></div></div>
       <div class="professional-client-list">${clients.size ? [...clients.values()].map(client => `<article class="admin-row"><div><h3>${escapeHtml(client.name)}</h3><p>${escapeHtml([client.email, client.phone].filter(Boolean).join(" · ") || "Contato pelo perfil")}</p></div><div class="client-activity"><span>${client.bookings} ${client.bookings === 1 ? "pedido" : "pedidos"}</span><span>${client.conversations} ${client.conversations === 1 ? "conversa" : "conversas"}</span></div></article>`).join("") : '<p class="empty-state">Seus clientes aparecerão aqui quando enviarem um pedido ou iniciarem uma conversa.</p>'}</div>`;
+    const paymentsBox = document.getElementById("professional-payments");
+    async function renderPayments() {
+      if (!paymentsBox) return;
+      try {
+        const info = await chamarAPI("professional/payments");
+        const params = new URLSearchParams(location.search).get("mp");
+        const notice = params === "ok" ? "Conta conectada com sucesso." : params === "erro" ? "Não foi possível concluir a conexão. Tente novamente." : "";
+        let body;
+        if (!info.gatewayEnabled) {
+          body = '<p class="form-note">O pagamento online ainda não está ativo na plataforma. Seus pedidos seguem no modo demonstrativo.</p>';
+        } else if (info.connected) {
+          body = `<p>Conta do Mercado Pago <strong>conectada</strong>${info.connectedAt ? ` em ${new Date(info.connectedAt).toLocaleDateString("pt-BR")}` : ""}. Os pagamentos dos seus clientes caem direto na sua conta; o Click Beleza retém ${info.feePercent}% de comissão.</p>
+            <div class="account-actions"><button class="button button-outline" type="button" id="mp-disconnect">Desconectar</button></div>`;
+        } else if (info.connectionAvailable) {
+          body = `<p>Conecte sua conta do Mercado Pago para receber os pagamentos diretamente, com a comissão de ${info.feePercent}% descontada automaticamente. Você autoriza no site do Mercado Pago; nós nunca vemos sua senha.</p>
+            <div class="account-actions"><button class="button button-primary" type="button" id="mp-connect">Conectar Mercado Pago</button></div>`;
+        } else {
+          body = '<p class="form-note">A conexão de contas ainda não está disponível neste ambiente.</p>';
+        }
+        paymentsBox.innerHTML = `<div class="admin-section-heading"><div><p class="eyebrow">RECEBIMENTOS</p><h2>Receber pelo Mercado Pago</h2></div></div>${notice ? `<p class="form-feedback" role="status">${escapeHtml(notice)}</p>` : ""}${body}<p class="form-feedback" id="mp-feedback" aria-live="polite"></p>`;
+        paymentsBox.querySelector("#mp-connect")?.addEventListener("click", async event => {
+          event.currentTarget.disabled = true;
+          try {
+            const { url } = await chamarAPI("professional/payments/connect", { method: "POST", body: JSON.stringify({}) });
+            location.assign(url);
+          } catch (error) {
+            paymentsBox.querySelector("#mp-feedback").textContent = error.message;
+            event.currentTarget.disabled = false;
+          }
+        });
+        paymentsBox.querySelector("#mp-disconnect")?.addEventListener("click", async () => {
+          if (!confirm("Desconectar sua conta do Mercado Pago? Novos pedidos passarão a entrar na conta da plataforma.")) return;
+          await chamarAPI("professional/payments/disconnect", { method: "POST", body: JSON.stringify({}) });
+          history.replaceState(null, "", location.pathname);
+          renderPayments();
+        });
+      } catch (error) {
+        paymentsBox.innerHTML = `<p class="form-feedback">${escapeHtml(error.message)}</p>`;
+      }
+    }
+    renderPayments();
     const finance = document.getElementById("professional-finance");
     function renderFinance() {
       const income = transactions.filter(item => item.type === "entrada").reduce((sum, item) => sum + Number(item.amount), 0);

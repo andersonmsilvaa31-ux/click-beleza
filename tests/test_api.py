@@ -165,6 +165,66 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertTrue(any(c[1] == "/v1/payments/555/refunds" for c in calls))
         self.assertFalse(payments.verify_signature({"x-signature": "ts=1,v1=aa"}, "1", secret="s"))
 
+    def test_professional_connects_mercadopago_with_oauth_and_split(self):
+        import payments
+        from cryptography.fernet import Fernet
+        from urllib.parse import urlsplit, parse_qs
+        env = {"CLICK_BELEZA_MP_ACCESS_TOKEN": "TEST-token", "CLICK_BELEZA_MP_WEBHOOK_SECRET": "segredo",
+               "CLICK_BELEZA_PUBLIC_URL": "https://exemplo.com.br", "CLICK_BELEZA_MP_CLIENT_ID": "123",
+               "CLICK_BELEZA_MP_CLIENT_SECRET": "cs", "CLICK_BELEZA_ENCRYPTION_KEY": Fernet.generate_key().decode()}
+        calls = []
+
+        def fake_http(method, path, token, payload=None, idempotency_key=None):
+            calls.append((method, path, token, payload))
+            if path == "/oauth/token":
+                return {"access_token": "SELLER-1", "refresh_token": "R1", "user_id": 77, "expires_in": 15000000}
+            return {"id": "pref-2", "init_point": "https://mp.test/pay/pref-2"}
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+
+        with patch.dict(os.environ, env), patch.object(payments, "http", fake_http):
+            self.create_user("professional", "test-professional")
+            self.assertEqual(self.authenticated_request("/api/professional/payments")[0], 401)
+            self.assertEqual(self.authenticated_request("/api/auth/login", "POST", {"identifier": "professional@example.com", "password": "test-password-123"})[0], 200)
+            status, info = self.authenticated_request("/api/professional/payments")
+            self.assertEqual((status, info["connected"], info["connectionAvailable"]), (200, False, True))
+            status, body = self.authenticated_request("/api/professional/payments/connect", "POST", {})
+            self.assertEqual(status, 200)
+            state = parse_qs(urlsplit(body["url"]).query)["state"][0]
+
+            def callback(state_value, code="abc"):
+                query = urllib.parse.urlencode({"code": code, "state": state_value})
+                opener = urllib.request.build_opener(NoRedirect)
+                try:
+                    opener.open(self.base_url + "/api/payments/oauth/callback?" + query, timeout=5)
+                except urllib.error.HTTPError as error:
+                    return error.code, error.headers["Location"]
+
+            self.assertEqual(callback(state + "x"), (302, "/professional-dashboard.html?mp=erro"))
+            self.assertEqual(callback(state), (302, "/professional-dashboard.html?mp=ok"))
+            self.assertEqual(callback(state), (302, "/professional-dashboard.html?mp=erro"))  # uso único
+            stored = next(u for u in backend.load_data()["users"] if u["role"] == "professional")
+            self.assertNotIn("SELLER-1", json.dumps(stored))  # token cifrado em repouso
+            self.assertEqual(self.authenticated_request("/api/professional/payments")[1]["connected"], True)
+            self.assertNotIn("mpSeller", json.dumps(self.authenticated_request("/api/auth/me")[1]))
+            # a cobrança passa a usar a conta do profissional e retém a comissão
+            professional = backend.load_data()["professionals"][0]
+            service = professional["services"][0]
+            day = (date.today() + timedelta(days=2)).isoformat()
+            status, created = self.post_json("/api/bookings", {
+                "professionalId": professional["id"], "customerName": "Ana", "customerPhone": "11999999999",
+                "date": day, "time": "10:00", "serviceName": service["name"], "price": service["price"]})
+            self.assertEqual(status, 201)
+            status, _ = self.post_json(f"/api/bookings/{created['booking']['id']}/checkout", {"customerToken": created["customerToken"]})
+            self.assertEqual(status, 200)
+            pref = next(c for c in calls if c[1] == "/checkout/preferences")
+            self.assertEqual(pref[2], "SELLER-1")
+            self.assertEqual(pref[3]["marketplace_fee"], round(float(service["price"]) * 0.10, 2))
+            self.assertEqual(self.authenticated_request("/api/professional/payments/disconnect", "POST", {})[0], 200)
+            self.assertFalse(self.authenticated_request("/api/professional/payments")[1]["connected"])
+
     def test_static_assets_use_etag_gzip_head_and_options(self):
         request = urllib.request.Request(self.base_url + "/app.js", headers={"Accept-Encoding": "gzip"})
         with urllib.request.urlopen(request, timeout=5) as response:
