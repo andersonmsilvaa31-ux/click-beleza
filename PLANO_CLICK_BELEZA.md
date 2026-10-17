@@ -41,8 +41,17 @@ Para abrir o mesmo banco no pgAdmin, registre um servidor com host
 Sem `CLICK_BELEZA_DATABASE_URL`, o backend mantém o armazenamento JSON para
 testes e execução independente. Acesse `http://127.0.0.1:8765`. Os perfis
 iniciais são exemplos demonstrativos em Marília e São Paulo e não representam
-profissionais reais. O protótipo não tem
-autenticação nem proteção de dados suficiente para uso público. Não há
+profissionais reais. O protótipo tem contas de profissionais e administrador, com senhas armazenadas
+como hash e sessões em cookie HttpOnly. O painel administrativo fica em
+`/admin.html`; a área profissional fica em `/professional-dashboard.html`.
+Cadastros de profissionais criam uma conta e uma sessão automaticamente.
+Para criar a primeira conta administrativa no VS Code, execute
+**Click Beleza: criar primeiro administrador** em **Terminal → Run Task**. A
+senha aleatória é exibida uma única vez no terminal; guarde-a em local seguro.
+O login inicial é `admin@clickbeleza.local`, configurável pela tarefa.
+Contas profissionais visualizam apenas os próprios agendamentos e conversas.
+Apesar da autenticação, este MVP ainda não tem controles suficientes para uso
+público em produção. Não há
 processamento de pagamentos. Após enviar um pedido, o cliente pode avançar por
 uma etapa demonstrativa de Pix ou cartão; nenhuma cobrança, transferência,
 repasse ou coleta de dados financeiros ocorre. O pedido continua aguardando a
@@ -79,6 +88,13 @@ dependem da disponibilidade do serviço público Overpass e podem estar
 incompletos ou desatualizados. A interface informa indisponibilidade e mantém
 os cadastros Click Beleza acessíveis como alternativa. Atribuição: ©
 OpenStreetMap contributors, sob licença ODbL.
+
+As rotas de conta são `/api/auth/login`, `/api/auth/logout` e `/api/auth/me`.
+O painel administrativo usa `/api/admin/overview` e as rotas protegidas de
+gestão; profissionais autenticados recebem somente os próprios pedidos e
+conversas. A sessão expira após oito horas. Em uma hospedagem pública, use
+HTTPS e revise controles de segurança, privacidade e recuperação de acesso
+antes de liberar as contas.
 
 **Consulta de CEP** (`/api/cep?cep=00000-000`): consulta o ViaCEP e, se ele
 falhar, o BrasilAPI; depois tenta obter coordenadas pelo Nominatim
@@ -176,16 +192,17 @@ cliente puder ser comparada com esses dados.
 
 ### Para desenvolver
 
-- **Protótipo atual:** HTML, CSS e JavaScript.
-- **Próxima etapa:** backend e banco de dados para usuários, profissionais,
-  serviços, horários, reservas e avaliações.
+- **Protótipo atual:** HTML, CSS e JavaScript com backend local, PostgreSQL e
+  autenticação básica para profissionais e administração.
+- **Próxima etapa:** robustecer o backend e o banco de dados para operação
+  pública, com horários, reservas, auditoria e recuperação de acesso.
 - Serviço de mapas/geocodificação para calcular distâncias a partir de
   endereços ou coordenadas.
 - Para exibir perfis do Google Maps diretamente no marketplace, avaliar a
   Places API oficial, obter chave e configurar faturamento, restrições de chave
   e regras de exibição. O protótipo oferece apenas um link de busca externa e
   não faz raspagem nem importação de dados do Maps.
-- Serviço de autenticação e envio de e-mail ou notificações.
+- Envio de e-mail ou notificações para contas e agendamentos.
 - Provedor de pagamentos, caso a cobrança seja feita dentro da plataforma.
 - Hospedagem, domínio e ambiente de testes.
 

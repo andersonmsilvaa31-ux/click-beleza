@@ -50,6 +50,22 @@
         "isDefault": true
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Click Beleza: criar primeiro administrador",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "-u",
+        "${workspaceFolder}\\scripts\\create_admin.py"
+      ],
+      "options": {
+        "env": {
+          "CLICK_BELEZA_DATABASE_URL": "postgresql://click_beleza_app@127.0.0.1:5432/click_beleza",
+          "CLICK_BELEZA_ADMIN_LOGIN": "admin@clickbeleza.local"
+        }
+      },
+      "problemMatcher": []
     }
   ]
 }

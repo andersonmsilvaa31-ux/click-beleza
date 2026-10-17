@@ -2,6 +2,7 @@ import json
 import base64
 import binascii
 import hashlib
+import hmac
 import math
 import os
 import re
@@ -12,6 +13,7 @@ import uuid
 from copy import deepcopy
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
@@ -38,8 +40,12 @@ STATIC_FILES = {
     "/agenda.html": ("agenda.html", "text/html; charset=utf-8"),
     "/services.html": ("services.html", "text/html; charset=utf-8"),
     "/anunciar.html": ("anunciar.html", "text/html; charset=utf-8"),
+    "/login.html": ("login.html", "text/html; charset=utf-8"),
+    "/admin.html": ("admin.html", "text/html; charset=utf-8"),
+    "/professional-dashboard.html": ("professional-dashboard.html", "text/html; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/account.js": ("account.js", "text/javascript; charset=utf-8"),
     "/api.js": ("api.js", "text/javascript; charset=utf-8"),
     "/assets/inspiracao-unhas.jpg": ("assets/inspiracao-unhas.jpg", "image/jpeg"),
     "/assets/inspiracao-make.jpg": ("assets/inspiracao-make.jpg", "image/jpeg"),
@@ -56,6 +62,13 @@ OVERPASS_CACHE_SECONDS = 10 * 60
 CACHE_MAX_ENTRIES = 200
 CACHE_LOCK = threading.Lock()
 CACHE = {}
+PASSWORD_ITERATIONS = 310_000
+SESSION_TTL_SECONDS = 8 * 60 * 60
+SESSION_COOKIE = "click_beleza_session"
+LOGIN_ATTEMPT_LIMIT = 5
+LOGIN_LOCKOUT_SECONDS = 15 * 60
+LOGIN_ATTEMPTS = {}
+LOGIN_LOCK = threading.Lock()
 
 
 def cache_get(key):
@@ -247,6 +260,10 @@ SAMPLE_PROFESSIONALS = [
 def _validate_data(data):
     if not isinstance(data, dict) or not isinstance(data.get("professionals"), list) or not isinstance(data.get("bookings"), list):
         raise RuntimeError("Os dados do Click Beleza têm formato inválido.")
+    data.setdefault("users", [])
+    data.setdefault("sessions", [])
+    data.setdefault("chats", [])
+    data.setdefault("partners", [])
     return data
 
 
@@ -387,7 +404,7 @@ SAMPLE_PARTNERS = [
 
 
 def get_partners(data):
-    if "partners" not in data:
+    if not data.get("partners"):
         data["partners"] = deepcopy(SAMPLE_PARTNERS)
     return data["partners"]
 
@@ -402,6 +419,52 @@ def public_partner(partner):
 
 def token_hash(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def password_record(password):
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS)
+    return {
+        "passwordSalt": salt.hex(),
+        "passwordHash": digest.hex(),
+        "passwordIterations": PASSWORD_ITERATIONS,
+    }
+
+
+def verify_password(password, user):
+    try:
+        salt = bytes.fromhex(user["passwordSalt"])
+        expected = bytes.fromhex(user["passwordHash"])
+        iterations = int(user["passwordIterations"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return hmac.compare_digest(actual, expected)
+
+
+def public_user(user, professional=None):
+    result = {
+        "id": user["id"],
+        "email": user["email"],
+        "role": user["role"],
+        "professionalId": user.get("professionalId"),
+        "active": user.get("active", True),
+    }
+    if professional is not None:
+        result["professionalName"] = professional.get("name", "")
+    return result
+
+
+def new_user(email, password, role, professional_id=None):
+    return {
+        "id": uuid.uuid4().hex,
+        "email": email.strip().casefold(),
+        "role": role,
+        "professionalId": professional_id,
+        "active": True,
+        "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        **password_record(password),
+    }
 
 
 def canonical_api_path(path):
@@ -436,8 +499,17 @@ class AppHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def _json(self, status, payload):
-        self._send(status, "application/json; charset=utf-8", json.dumps(payload, ensure_ascii=False))
+    def _json(self, status, payload, headers=None):
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(encoded)
 
     def _read_json(self):
         try:
@@ -454,10 +526,138 @@ class AppHandler(BaseHTTPRequestHandler):
             raise ValueError("O conteúdo enviado precisa ser um objeto JSON.")
         return value
 
+    def _current_user(self):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except (CookieError, TypeError, ValueError):
+            return None
+        session_cookie = cookie.get(SESSION_COOKIE)
+        if not session_cookie:
+            return None
+        digest = token_hash(session_cookie.value)
+        data = load_data()
+        session = next((item for item in data["sessions"] if secrets.compare_digest(item.get("tokenHash", ""), digest)), None)
+        if not session or session.get("expiresAt", 0) <= time.time():
+            return None
+        user = next((item for item in data["users"] if item["id"] == session.get("userId")), None)
+        return user if user and user.get("active", True) else None
+
+    def _require_user(self, roles=None):
+        try:
+            user = self._current_user()
+        except RuntimeError as error:
+            self._json(500, {"error": str(error)})
+            return None
+        if not user:
+            self._json(401, {"error": "Entre na sua conta para continuar."})
+            return None
+        if roles and user.get("role") not in roles:
+            self._json(403, {"error": "Você não tem permissão para esta função."})
+            return None
+        return user
+
+    def _auth_me(self):
+        try:
+            user = self._current_user()
+            if not user:
+                self._json(200, {"user": None})
+                return
+            data = load_data()
+            professional = next(
+                (item for item in data["professionals"] if item["id"] == user.get("professionalId")),
+                None,
+            )
+            self._json(200, {"user": public_user(user, professional)})
+        except RuntimeError as error:
+            self._json(500, {"error": str(error)})
+
+    def _auth_login(self, data):
+        email = data.get("email")
+        password = data.get("password")
+        if not isinstance(email, str) or not isinstance(password, str):
+            raise ValueError("Informe seu e-mail e sua senha.")
+        email = email.strip().casefold()
+        if len(email) > 200 or len(password) > 128:
+            raise ValueError("E-mail ou senha inválidos.")
+        remote = self.client_address[0]
+        now = time.monotonic()
+        with LOGIN_LOCK:
+            attempts = [attempt for attempt in LOGIN_ATTEMPTS.get(remote, []) if now - attempt < LOGIN_LOCKOUT_SECONDS]
+            LOGIN_ATTEMPTS[remote] = attempts
+            if len(attempts) >= LOGIN_ATTEMPT_LIMIT:
+                self._json(429, {"error": "Muitas tentativas. Aguarde alguns minutos e tente novamente."})
+                return
+        try:
+            stored = load_data()
+        except RuntimeError as error:
+            self._json(500, {"error": str(error)})
+            return
+        user = next((item for item in stored["users"] if item.get("email", "").casefold() == email), None)
+        if not user or not user.get("active", True) or not verify_password(password, user):
+            with LOGIN_LOCK:
+                LOGIN_ATTEMPTS.setdefault(remote, []).append(now)
+            self._json(401, {"error": "E-mail ou senha incorretos."})
+            return
+        with LOGIN_LOCK:
+            LOGIN_ATTEMPTS.pop(remote, None)
+        session_token = secrets.token_urlsafe(32)
+        stored["sessions"] = [
+            session for session in stored["sessions"] if session.get("expiresAt", 0) > time.time()
+        ]
+        stored["sessions"].append({
+            "tokenHash": token_hash(session_token),
+            "userId": user["id"],
+            "expiresAt": time.time() + SESSION_TTL_SECONDS,
+        })
+        try:
+            save_data(stored)
+        except RuntimeError as error:
+            self._json(500, {"error": str(error)})
+            return
+        professional = next(
+            (item for item in stored["professionals"] if item["id"] == user.get("professionalId")),
+            None,
+        )
+        self._json(
+            200,
+            {"user": public_user(user, professional)},
+            {"Set-Cookie": f"{SESSION_COOKIE}={session_token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL_SECONDS}"},
+        )
+
+    def _auth_logout(self):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except (CookieError, TypeError, ValueError):
+            cookie = SimpleCookie()
+        session_cookie = cookie.get(SESSION_COOKIE)
+        if session_cookie:
+            digest = token_hash(session_cookie.value)
+            try:
+                stored = load_data()
+                stored["sessions"] = [
+                    session for session in stored["sessions"]
+                    if not secrets.compare_digest(session.get("tokenHash", ""), digest)
+                ]
+                save_data(stored)
+            except RuntimeError as error:
+                self._json(500, {"error": str(error)})
+                return
+        self._json(
+            200,
+            {"ok": True},
+            {"Set-Cookie": f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"},
+        )
+
     def do_GET(self):
         parsed = urlsplit(self.path)
         parsed = parsed._replace(path=canonical_api_path(parsed.path))
-        if parsed.path == "/api/cep":
+        if parsed.path == "/api/auth/me":
+            self._auth_me()
+        elif parsed.path == "/api/admin/overview":
+            self._admin_overview()
+        elif parsed.path == "/api/cep":
             self._lookup_cep(parse_qs(parsed.query).get("cep", [""])[0])
         elif parsed.path == "/api/professionals/reais":
             self._search_real_professionals(parse_qs(parsed.query))
@@ -487,7 +687,11 @@ class AppHandler(BaseHTTPRequestHandler):
         parsed = parsed._replace(path=canonical_api_path(parsed.path))
         try:
             data = self._read_json()
-            if parsed.path == "/api/professionals":
+            if parsed.path == "/api/auth/login":
+                self._auth_login(data)
+            elif parsed.path == "/api/auth/logout":
+                self._auth_logout()
+            elif parsed.path == "/api/professionals":
                 self._create_professional(data)
             elif parsed.path == "/api/bookings":
                 self._create_booking(data)
@@ -533,12 +737,16 @@ class AppHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         parsed = parsed._replace(path=canonical_api_path(parsed.path))
         match = re.fullmatch(r"/api/bookings/([^/]+)/status", parsed.path)
-        if not match:
+        admin_match = re.fullmatch(r"/api/admin/(professionals|users)/([^/]+)/status", parsed.path)
+        if not match and not admin_match:
             self._json(404, {"error": "Operação não encontrada."})
             return
         try:
             data = self._read_json()
-            self._update_booking_status(match.group(1), data)
+            if match:
+                self._update_booking_status(match.group(1), data)
+            else:
+                self._admin_update_status(admin_match.group(1), admin_match.group(2), data)
         except ValueError as error:
             self._json(400, {"error": str(error)})
         except RuntimeError as error:
@@ -581,6 +789,8 @@ class AppHandler(BaseHTTPRequestHandler):
             city = PILOT_REGION.split(",", 1)[0].strip().casefold()
         results = []
         for professional in data["professionals"]:
+            if professional.get("status", "active") != "active":
+                continue
             professional_service = professional.get("service", "").casefold()
             if service and not (
                 professional_service == service
@@ -809,12 +1019,18 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(500, {"error": str(error)})
             return
         professional = next((item for item in data["professionals"] if item["id"] == professional_id), None)
-        if not professional:
+        if not professional or professional.get("status", "active") != "active":
             self._json(404, {"error": "Profissional não encontrado."})
             return
         self._json(200, {"professional": public_professional(professional, include_portfolio=True)})
 
     def _get_professional_for_edit(self, professional_id):
+        user = self._require_user({"admin", "professional"})
+        if not user:
+            return
+        if user["role"] == "professional" and user.get("professionalId") != professional_id:
+            self._json(403, {"error": "Você só pode consultar o seu próprio perfil."})
+            return
         try:
             data = load_data()
         except RuntimeError as error:
@@ -828,7 +1044,11 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "Perfis de demonstração não podem ser editados."})
             return
         result = public_professional(professional, include_portfolio=True)
-        result.update({"email": professional.get("email", ""), "phone": professional.get("phone", "")})
+        result.update({
+            "email": professional.get("email", ""),
+            "phone": professional.get("phone", ""),
+            "status": professional.get("status", "active"),
+        })
         service = professional.get("services", [{}])[0]
         result.update({
             "serviceName": service.get("name", ""),
@@ -925,13 +1145,41 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def _create_professional(self, data):
         professional = self._professional_from_form(data)
+        email = data.get("email")
+        password = data.get("password")
+        if not isinstance(email, str) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()):
+            raise ValueError("Informe um e-mail válido para acessar sua conta.")
+        if not isinstance(password, str) or not 12 <= len(password) <= 128:
+            raise ValueError("A senha deve ter entre 12 e 128 caracteres.")
+        professional["status"] = "active"
+        session_token = secrets.token_urlsafe(32)
         with DATA_LOCK:
             stored = load_data()
+            email = email.strip().casefold()
+            if any(user.get("email", "").casefold() == email for user in stored["users"]):
+                raise ValueError("Já existe uma conta com este e-mail.")
+            user = new_user(email, password, "professional", professional["id"])
             stored["professionals"].append(professional)
+            stored["users"].append(user)
+            stored["sessions"].append({
+                "tokenHash": token_hash(session_token),
+                "userId": user["id"],
+                "expiresAt": time.time() + SESSION_TTL_SECONDS,
+            })
             save_data(stored)
-        self._json(201, {"professional": public_professional(professional)})
+        self._json(
+            201,
+            {"professional": public_professional(professional), "user": public_user(user, professional)},
+            {"Set-Cookie": f"{SESSION_COOKIE}={session_token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL_SECONDS}"},
+        )
 
     def _update_professional(self, professional_id, data):
+        user = self._require_user({"admin", "professional"})
+        if not user:
+            return
+        if user["role"] == "professional" and user.get("professionalId") != professional_id:
+            self._json(403, {"error": "Você só pode alterar o seu próprio perfil."})
+            return
         with DATA_LOCK:
             stored = load_data()
             existing = next((item for item in stored["professionals"] if item["id"] == professional_id), None)
@@ -942,10 +1190,24 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "Perfis de demonstração não podem ser editados."})
                 return
             updated = self._professional_from_form(data, professional_id)
+            updated["status"] = existing.get("status", "active")
             updated["rating"] = existing.get("rating", 0)
             updated["reviewCount"] = existing.get("reviewCount", 0)
             updated["reviews"] = existing.get("reviews", [])
             updated["portfolio"] = self._validated_portfolio(data) if "portfolio" in data else existing.get("portfolio", [])
+            new_email = updated["email"].casefold()
+            linked_user = next(
+                (item for item in stored["users"] if item.get("professionalId") == professional_id),
+                None,
+            )
+            duplicate = next(
+                (item for item in stored["users"] if item.get("email", "").casefold() == new_email and item is not linked_user),
+                None,
+            )
+            if new_email and duplicate:
+                raise ValueError("Este e-mail já pertence a outra conta.")
+            if linked_user and new_email:
+                linked_user["email"] = new_email
             stored["professionals"] = [
                 updated if item["id"] == professional_id else item for item in stored["professionals"]
             ]
@@ -1044,14 +1306,88 @@ class AppHandler(BaseHTTPRequestHandler):
         })
 
     def _list_bookings(self):
+        user = self._require_user({"admin", "professional"})
+        if not user:
+            return
         try:
             data = load_data()
         except RuntimeError as error:
             self._json(500, {"error": str(error)})
             return
-        self._json(200, {"bookings": sorted(data["bookings"], key=lambda item: (item["date"], item["time"]))})
+        bookings = data["bookings"]
+        if user["role"] == "professional":
+            bookings = [item for item in bookings if item.get("professionalId") == user.get("professionalId")]
+        self._json(200, {"bookings": sorted(bookings, key=lambda item: (item["date"], item["time"]))})
+
+    def _admin_overview(self):
+        if not self._require_user({"admin"}):
+            return
+        try:
+            data = load_data()
+        except RuntimeError as error:
+            self._json(500, {"error": str(error)})
+            return
+        professionals = []
+        for item in data["professionals"]:
+            result = public_professional(item, include_portfolio=True)
+            result.update({"email": item.get("email", ""), "phone": item.get("phone", ""),
+                           "status": item.get("status", "active")})
+            professionals.append(result)
+        partners = [
+            {key: value for key, value in item.items() if key != "tokenHash"}
+            for item in get_partners(data)
+        ]
+        self._json(200, {
+            "professionals": professionals,
+            "bookings": sorted(data["bookings"], key=lambda item: (item["date"], item["time"])),
+            "chats": [self._public_chat(item) for item in sorted(data["chats"], key=lambda chat: chat["updatedAt"], reverse=True)],
+            "partners": partners,
+            "users": [public_user(item) for item in data["users"]],
+        })
+
+    def _admin_update_status(self, kind, record_id, data):
+        if not self._require_user({"admin"}):
+            return
+        with DATA_LOCK:
+            stored = load_data()
+            if kind == "professionals":
+                status = data.get("status")
+                if status not in {"active", "paused"}:
+                    raise ValueError("Escolha um status válido para o perfil.")
+                record = next((item for item in stored["professionals"] if item["id"] == record_id), None)
+                if not record:
+                    self._json(404, {"error": "Perfil profissional não encontrado."})
+                    return
+                record["status"] = status
+                response = {"status": status}
+            else:
+                active = data.get("active")
+                if not isinstance(active, bool):
+                    raise ValueError("Informe se a conta deve ficar ativa.")
+                record = next((item for item in stored["users"] if item["id"] == record_id), None)
+                if not record or record.get("role") != "professional":
+                    self._json(404, {"error": "Conta profissional não encontrada."})
+                    return
+                record["active"] = active
+                if not active:
+                    stored["sessions"] = [
+                        session for session in stored["sessions"] if session.get("userId") != record_id
+                    ]
+                if record.get("professionalId"):
+                    professional = next(
+                        (item for item in stored["professionals"] if item["id"] == record["professionalId"]),
+                        None,
+                    )
+                    if professional:
+                        professional["status"] = "active" if active else "paused"
+                response = {"active": active}
+            save_data(stored)
+        self._json(200, response)
 
     def _update_booking_status(self, booking_id, data):
+        user = self._require_user({"admin", "professional"})
+        if not user:
+            return
         status = data.get("status")
         if status not in VALID_STATUSES:
             raise ValueError("Status de agendamento inválido.")
@@ -1060,6 +1396,9 @@ class AppHandler(BaseHTTPRequestHandler):
             booking = next((item for item in stored["bookings"] if item["id"] == booking_id), None)
             if not booking:
                 self._json(404, {"error": "Agendamento não encontrado."})
+                return
+            if user["role"] == "professional" and booking.get("professionalId") != user.get("professionalId"):
+                self._json(403, {"error": "Você só pode atualizar pedidos do seu perfil."})
                 return
             allowed = {"solicitado": {"confirmado", "cancelado"}, "confirmado": {"concluido", "cancelado"}}
             if status not in allowed.get(booking["status"], set()):
@@ -1127,26 +1466,54 @@ class AppHandler(BaseHTTPRequestHandler):
         return {key: chat[key] for key in ("id", "professionalId", "professionalName", "customerName", "createdAt", "updatedAt", "messages")}
 
     def _get_chat(self, chat_id, token):
-        with DATA_LOCK:
-            chat = next((c for c in load_data().get("chats", []) if c["id"] == chat_id), None)
-        if not chat or not token or not secrets.compare_digest(chat["tokenHash"], token_hash(token)):
+        try:
+            with DATA_LOCK:
+                chat = next((c for c in load_data().get("chats", []) if c["id"] == chat_id), None)
+            user = self._current_user()
+        except RuntimeError as error:
+            self._json(500, {"error": str(error)})
+            return
+        customer_access = bool(
+            chat and token and secrets.compare_digest(chat["tokenHash"], token_hash(token))
+        )
+        professional_access = bool(
+            chat and user and user.get("role") == "admin"
+        ) or bool(
+            chat and user and user.get("role") == "professional"
+            and user.get("professionalId") == chat.get("professionalId")
+        )
+        if not chat or not (customer_access or professional_access):
             self._json(404, {"error": "Conversa não encontrada."})
             return
         self._json(200, {"chat": self._public_chat(chat)})
 
     def _list_chats(self):
+        user = self._require_user({"admin", "professional"})
+        if not user:
+            return
         with DATA_LOCK:
             chats = load_data().get("chats", [])
+        if user["role"] == "professional":
+            chats = [chat for chat in chats if chat.get("professionalId") == user.get("professionalId")]
         chats = sorted(chats, key=lambda c: c["updatedAt"], reverse=True)
         self._json(200, {"chats": [self._public_chat(c) for c in chats]})
 
     def _chat_message(self, chat_id, data, from_professional):
         text = self._clean_message(data)
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        user = self._current_user() if from_professional else None
+        if from_professional and not user:
+            self._json(401, {"error": "Entre na sua conta profissional para responder."})
+            return
+        if from_professional and user.get("role") not in {"admin", "professional"}:
+            self._json(403, {"error": "Você não tem permissão para responder a conversas."})
+            return
         with DATA_LOCK:
             stored = load_data()
             chat = next((c for c in stored.get("chats", []) if c["id"] == chat_id), None)
-            valid = chat is not None and (from_professional or (
+            valid = chat is not None and (not from_professional or (
+                user.get("role") == "admin" or user.get("professionalId") == chat.get("professionalId")
+            )) and (from_professional or (
                 isinstance(data.get("token"), str) and secrets.compare_digest(chat["tokenHash"], token_hash(data["token"]))))
             if not valid:
                 self._json(404, {"error": "Conversa não encontrada."})
@@ -1233,7 +1600,11 @@ class AppHandler(BaseHTTPRequestHandler):
             raise ValueError("Ação inválida.")
         with DATA_LOCK:
             stored = load_data()
-            partner = self._find_partner_by_token(stored, data.get("token"))
+            user = self._current_user()
+            if user and user.get("role") == "admin":
+                partner = next((item for item in get_partners(stored) if item["id"] == data.get("partnerId")), None)
+            else:
+                partner = self._find_partner_by_token(stored, data.get("token"))
             if not partner:
                 self._json(404, {"error": "Código de acesso inválido."})
                 return

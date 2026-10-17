@@ -1,4 +1,5 @@
 import copy
+import http.cookiejar
 import json
 import tempfile
 import threading
@@ -54,6 +55,10 @@ class ApiIntegrationTests(unittest.TestCase):
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+        self.auth_cookies = http.cookiejar.CookieJar()
+        self.auth_client = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self.auth_cookies)
+        )
 
     def tearDown(self):
         self.server.shutdown()
@@ -82,6 +87,31 @@ class ApiIntegrationTests(unittest.TestCase):
                 return response.status, json.load(response)
         except urllib.error.HTTPError as error:
             return error.code, json.load(error)
+
+    def authenticated_request(self, path, method="GET", payload=None):
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+            headers={"Content-Type": "application/json"} if payload is not None else {},
+            method=method,
+        )
+        try:
+            with self.auth_client.open(request, timeout=5) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, json.load(error)
+
+    def create_user(self, role, professional_id=None, email=None):
+        data = backend.load_data()
+        user = backend.new_user(
+            email or f"{role}@example.com",
+            "test-password-123",
+            role,
+            professional_id,
+        )
+        data["users"].append(user)
+        backend.save_data(data)
+        return user
 
     def test_overpass_places_are_returned_without_invented_prices(self):
         payload = {"elements": [
@@ -292,8 +322,10 @@ class ApiIntegrationTests(unittest.TestCase):
             "name": "Studio Novo",
             "service": "manicure",
             "city": "Marília",
+            "email": "studio@example.com",
+            "password": "senha-segura-123",
         }
-        status, response = self.post_json("/api/profissionais", payload)
+        status, response = self.authenticated_request("/api/profissionais", "POST", payload)
         self.assertEqual(status, 201)
         professional_id = response["professional"]["id"]
         self.assertEqual(response["professional"]["profileCompletion"], 50)
@@ -305,6 +337,59 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(detail["professional"]["city"], "Marília")
         self.assertNotIn("phone", detail["professional"])
         self.assertNotIn("email", detail["professional"])
+        status, account = self.authenticated_request("/api/auth/me")
+        self.assertEqual(status, 200)
+        self.assertEqual(account["user"]["role"], "professional")
+        self.assertEqual(account["user"]["professionalId"], professional_id)
+
+    def test_admin_overview_requires_admin_and_returns_management_data(self):
+        self.assertEqual(self.get_json("/api/admin/overview")[0], 401)
+        self.create_user("admin")
+        status, login = self.authenticated_request(
+            "/api/auth/login",
+            "POST",
+            {"email": "admin@example.com", "password": "test-password-123"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(login["user"]["role"], "admin")
+
+        status, overview = self.authenticated_request("/api/admin/overview")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(set(overview), {"professionals", "bookings", "chats", "partners", "users"})
+        self.assertTrue(overview["professionals"])
+        self.assertNotIn("passwordHash", overview["users"][0])
+
+    def test_professional_booking_access_is_limited_to_linked_profile(self):
+        second = copy.deepcopy(backend.SAMPLE_PROFESSIONALS[0])
+        second.update({"id": "other-professional", "demo": False, "name": "Outro perfil"})
+        future = (date.today() + timedelta(days=1)).isoformat()
+        data = backend.load_data()
+        data["professionals"].append(second)
+        data["bookings"] = [
+            {"id": "own-booking", "professionalId": "test-professional", "date": future, "time": "10:00"},
+            {"id": "other-booking", "professionalId": "other-professional", "date": future, "time": "11:00"},
+        ]
+        backend.save_data(data)
+        self.create_user("professional", "test-professional")
+        status, _ = self.authenticated_request(
+            "/api/auth/login",
+            "POST",
+            {"email": "professional@example.com", "password": "test-password-123"},
+        )
+        self.assertEqual(status, 200)
+
+        status, response = self.authenticated_request("/api/bookings")
+
+        self.assertEqual(status, 200)
+        self.assertEqual([booking["id"] for booking in response["bookings"]], ["own-booking"])
+        status, error = self.authenticated_request(
+            "/api/bookings/other-booking/status",
+            "PATCH",
+            {"status": "confirmado"},
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("seu perfil", error["error"])
 
     def test_complete_professional_profile_reaches_one_hundred_percent(self):
         profile = {

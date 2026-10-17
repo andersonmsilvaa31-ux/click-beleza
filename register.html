@@ -11,11 +11,12 @@
         <label>Nome profissional ou do espaço<input name="name" required maxlength="100" placeholder="Ex.: Studio Ana Lima"></label>
         <label>Categoria principal<select name="service" required><option value="">Selecione</option><option value="cabeleireiro">Cabelo</option><option value="barbeiro">Barbearia</option><option value="manicure">Manicure</option><option value="pedicure">Pedicure</option><option value="sobrancelhas">Sobrancelhas</option><option value="cilios">Cílios</option><option value="maquiagem">Maquiagem</option><option value="estetica">Estética</option><option value="massagem">Massagem</option><option value="depilacao">Depilação</option><option value="tatuagem_piercing">Tatuagem e piercing</option></select></label>
         <label>Cidade<input name="city" required maxlength="100" autocomplete="address-level2" placeholder="Ex.: Marília"></label>
+        <label class="full">E-mail para entrar na conta<input name="email" type="email" required maxlength="200" autocomplete="email" placeholder="voce@email.com"></label>
+        <label class="full" id="account-password-label">Crie uma senha<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"><span class="form-note">Use pelo menos 12 caracteres.</span></label>
         <details class="profile-extra full">
           <summary>Adicionar mais detalhes (opcional)</summary>
           <p class="form-note">Adicione uma descrição, serviços e fotos para ajudar clientes a conhecer seu trabalho.</p>
           <div class="form-grid profile-extra-grid">
-            <label>E-mail de contato<input name="email" type="email" maxlength="200" autocomplete="email" placeholder="voce@email.com"></label>
             <label>Telefone / WhatsApp<input name="phone" type="tel" maxlength="30" autocomplete="tel" placeholder="(14) 99999-9999"></label>
             <label class="full">Sobre seu trabalho<textarea name="description" maxlength="800" placeholder="Conte um pouco sobre sua experiência e seu atendimento."></textarea></label>
             <h2 class="full">Serviço e preço</h2>
@@ -37,7 +38,7 @@
         <button class="button button-primary full" type="submit">Criar meu perfil <span aria-hidden="true">→</span></button>
       </div>
       <p id="form-feedback" class="form-feedback" aria-live="polite"></p>
-      <p class="form-note">Demonstração local: ainda não há login. Não informe dados sensíveis.</p>
+      <p class="form-note">Sua senha é armazenada como hash e nunca aparece no perfil público. Novos perfis são publicados após o cadastro.</p>
     </form>
   </main>
   <footer class="site-footer">

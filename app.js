@@ -284,6 +284,9 @@ function initRegister() {
     document.getElementById("portfolio-count").textContent = `${total} de 8 itens no portfólio`;
   });
   if (professionalId) {
+    const passwordLabel = document.getElementById("account-password-label");
+    passwordLabel.hidden = true;
+    form.elements.password.required = false;
     form.querySelector(".profile-extra").open = true;
     document.querySelector(".form-shell h1").textContent = "Atualize seu perfil.";
     document.querySelector(".form-shell>p:not(.eyebrow)").textContent = "Atualize seu perfil quando quiser. Quanto mais informações adicionar, mais os clientes conhecerão seu trabalho.";
@@ -332,7 +335,7 @@ function initRegister() {
       const result = professionalId
         ? await chamarAPI(`profissionais/${encodeURIComponent(professionalId)}`, { method: "PUT", body: JSON.stringify(data) })
         : await chamarAPI("profissionais", { method: "POST", body: JSON.stringify(data) });
-      location.href = `/professional.html?id=${encodeURIComponent(result.professional.id)}&novo=1`;
+      location.href = "/professional-dashboard.html";
     } catch (error) {
       feedback.textContent = error.message;
       button.disabled = false;
@@ -779,6 +782,46 @@ function initChatInbox() {
   setInterval(() => load(), 5000);
 }
 
+function initAuthNav() {
+  document.querySelectorAll(".site-header nav").forEach(async nav => {
+    if (nav.dataset.accountMenu === "ready") return;
+    nav.dataset.accountMenu = "ready";
+    let user = null;
+    try {
+      user = (await chamarAPI("auth/me")).user;
+    } catch (error) {
+      console.error("Não foi possível carregar a sessão do Click Beleza:", error);
+    }
+    const link = document.createElement("a");
+    link.className = "account-nav-link";
+    link.href = user?.role === "admin" ? "/admin.html"
+      : user?.role === "professional" ? "/professional-dashboard.html" : "/login.html";
+    link.textContent = user?.role === "admin" ? "Admin"
+      : user?.role === "professional" ? "Meu perfil" : "Entrar";
+    nav.append(link);
+    if (!user) return;
+    if (user.role === "professional") {
+      const agenda = document.createElement("a");
+      agenda.href = "/agenda.html";
+      agenda.textContent = "Pedidos e conversas";
+      nav.append(agenda);
+    }
+    const logout = document.createElement("button");
+    logout.type = "button";
+    logout.className = "text-button account-logout";
+    logout.textContent = "Sair";
+    logout.addEventListener("click", async () => {
+      try {
+        await chamarAPI("auth/logout", { method: "POST", body: "{}" });
+        location.href = "/";
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+    nav.append(logout);
+  });
+}
+
 initHome();
 initProfessionals();
 initRegister();
@@ -789,3 +832,4 @@ initInspirationCarousel();
 initPartners();
 initAdvertise();
 initChatbot();
+initAuthNav();

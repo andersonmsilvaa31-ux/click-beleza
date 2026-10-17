@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Painel administrativo | Click Beleza</title><link rel="stylesheet" href="style.css"><script src="api.js" defer></script><script src="app.js" defer></script><script src="account.js" defer></script></head>
+<body>
+  <header class="site-header"><a class="brand" href="/">click<span>beleza</span><i>.</i></a><nav><a href="/">Ver site</a></nav></header>
+  <main class="page-shell admin-shell">
+    <div class="page-intro"><p class="eyebrow">ADMINISTRAÇÃO</p><h1>Painel do <span>Click Beleza</span></h1><p>Gerencie cadastros, pedidos, conversas, anúncios e acessos.</p></div>
+    <nav class="admin-tabs" aria-label="Seções administrativas"><a href="#admin-overview">Resumo</a><a href="#admin-professionals">Profissionais</a><a href="#admin-bookings">Agendamentos</a><a href="#admin-chats">Conversas</a><a href="#admin-partners">Anúncios</a><a href="#admin-users">Contas</a></nav>
+    <button class="button button-outline button-small" id="admin-refresh" type="button">Atualizar dados</button>
+    <p id="admin-feedback" class="form-feedback" aria-live="polite"></p>
+    <section class="admin-section" id="admin-overview"><h2>Resumo</h2><div class="admin-stat-grid" id="admin-stats"><p class="loading">Carregando dados…</p></div></section>
+    <section class="admin-section" id="admin-professionals"><h2>Profissionais e perfis</h2><div class="admin-list" id="admin-professional-list"></div></section>
+    <section class="admin-section" id="admin-bookings"><h2>Agendamentos</h2><div class="admin-list" id="admin-booking-list"></div></section>
+    <section class="admin-section" id="admin-chats"><h2>Conversas e suporte</h2><div class="admin-list" id="admin-chat-list"></div></section>
+    <section class="admin-section" id="admin-partners"><h2>Anúncios e marcas parceiras</h2><div class="admin-list" id="admin-partner-list"></div></section>
+    <section class="admin-section" id="admin-users"><h2>Contas e permissões</h2><div class="admin-list" id="admin-user-list"></div></section>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><div class="footer-brand"><a class="brand" href="/">click<span>beleza</span><i>.</i></a><p class="footer-text">Painel privado de administração.</p></div></div><div class="footer-bottom"><span>© 2026 Click Beleza · Marília, SP</span></div></footer>
+</body>
+</html>
