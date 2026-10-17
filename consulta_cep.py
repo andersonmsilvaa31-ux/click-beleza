@@ -41,6 +41,7 @@ STATIC_FILES = {
     "/services.html": ("services.html", "text/html; charset=utf-8"),
     "/anunciar.html": ("anunciar.html", "text/html; charset=utf-8"),
     "/login.html": ("login.html", "text/html; charset=utf-8"),
+    "/customer-orders.html": ("customer-orders.html", "text/html; charset=utf-8"),
     "/admin.html": ("admin.html", "text/html; charset=utf-8"),
     "/professional-dashboard.html": ("professional-dashboard.html", "text/html; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
@@ -264,6 +265,9 @@ def _validate_data(data):
     data.setdefault("sessions", [])
     data.setdefault("chats", [])
     data.setdefault("partners", [])
+    data.setdefault("financialTransactions", [])
+    if not isinstance(data["financialTransactions"], list):
+        raise RuntimeError("Os registros financeiros do Click Beleza têm formato inválido.")
     return data
 
 
@@ -442,6 +446,43 @@ def verify_password(password, user):
     return hmac.compare_digest(actual, expected)
 
 
+def normalize_cpf(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9.\-\s]+", value):
+        raise ValueError("Informe um CPF válido.")
+    digits = re.sub(r"[^0-9]", "", value)
+    if len(digits) != 11 or len(set(digits)) == 1:
+        raise ValueError("Informe um CPF válido.")
+    numbers = [int(char) for char in digits]
+    first = (sum(number * weight for number, weight in zip(numbers[:9], range(10, 1, -1))) * 10) % 11
+    first = 0 if first == 10 else first
+    second = (sum(number * weight for number, weight in zip(numbers[:10], range(11, 1, -1))) * 10) % 11
+    second = 0 if second == 10 else second
+    if numbers[9:] != [first, second]:
+        raise ValueError("Informe um CPF válido.")
+    return digits
+
+
+def private_identifier_record(value):
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", value.encode("ascii"), salt, PASSWORD_ITERATIONS)
+    return {
+        "cpfSalt": salt.hex(),
+        "cpfHash": digest.hex(),
+        "cpfIterations": PASSWORD_ITERATIONS,
+    }
+
+
+def verify_private_identifier(value, user):
+    try:
+        salt = bytes.fromhex(user["cpfSalt"])
+        expected = bytes.fromhex(user["cpfHash"])
+        iterations = int(user["cpfIterations"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    actual = hashlib.pbkdf2_hmac("sha256", value.encode("ascii"), salt, iterations)
+    return hmac.compare_digest(actual, expected)
+
+
 def public_user(user, professional=None):
     result = {
         "id": user["id"],
@@ -455,7 +496,20 @@ def public_user(user, professional=None):
     return result
 
 
-def new_user(email, password, role, professional_id=None):
+def public_booking(booking):
+    return {key: value for key, value in booking.items() if key != "customerTokenHash"}
+
+
+def customer_key(email, phone, name):
+    if isinstance(email, str) and email.strip():
+        return f"email:{email.strip().casefold()}"
+    if isinstance(phone, str) and phone.strip():
+        phone_digits = re.sub(r"\D", "", phone)
+        return f"phone:{phone_digits}"
+    return f"name:{name.strip().casefold()}" if isinstance(name, str) and name.strip() else "unknown"
+
+
+def new_user(email, password, role, professional_id=None, cpf=None):
     return {
         "id": uuid.uuid4().hex,
         "email": email.strip().casefold(),
@@ -463,6 +517,7 @@ def new_user(email, password, role, professional_id=None):
         "professionalId": professional_id,
         "active": True,
         "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        **(private_identifier_record(cpf) if cpf else {}),
         **password_record(password),
     }
 
@@ -573,12 +628,12 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json(500, {"error": str(error)})
 
     def _auth_login(self, data):
-        email = data.get("email")
+        identifier = data.get("identifier", data.get("email"))
         password = data.get("password")
-        if not isinstance(email, str) or not isinstance(password, str):
-            raise ValueError("Informe seu e-mail e sua senha.")
-        email = email.strip().casefold()
-        if len(email) > 200 or len(password) > 128:
+        if not isinstance(identifier, str) or not isinstance(password, str):
+            raise ValueError("Informe seu CPF ou e-mail e sua senha.")
+        identifier = identifier.strip()
+        if len(identifier) > 200 or len(password) > 128:
             raise ValueError("E-mail ou senha inválidos.")
         remote = self.client_address[0]
         now = time.monotonic()
@@ -593,7 +648,17 @@ class AppHandler(BaseHTTPRequestHandler):
         except RuntimeError as error:
             self._json(500, {"error": str(error)})
             return
-        user = next((item for item in stored["users"] if item.get("email", "").casefold() == email), None)
+        if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", identifier):
+            user = next((item for item in stored["users"] if item.get("email", "").casefold() == identifier.casefold()), None)
+        else:
+            try:
+                cpf = normalize_cpf(identifier)
+            except ValueError:
+                cpf = None
+            user = next(
+                (item for item in stored["users"] if cpf and verify_private_identifier(cpf, item)),
+                None,
+            )
         if not user or not user.get("active", True) or not verify_password(password, user):
             with LOGIN_LOCK:
                 LOGIN_ATTEMPTS.setdefault(remote, []).append(now)
@@ -677,6 +742,8 @@ class AppHandler(BaseHTTPRequestHandler):
             self._partner_stats(parse_qs(parsed.query).get("token", [""])[0])
         elif parsed.path == "/api/bookings":
             self._list_bookings()
+        elif parsed.path == "/api/professional/transactions":
+            self._list_professional_transactions()
         elif parsed.path in STATIC_FILES:
             self._serve_static(parsed.path)
         else:
@@ -693,10 +760,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._auth_logout()
             elif parsed.path == "/api/professionals":
                 self._create_professional(data)
+            elif parsed.path == "/api/professional/transactions":
+                self._create_professional_transaction(data)
             elif parsed.path == "/api/bookings":
                 self._create_booking(data)
             elif re.fullmatch(r"/api/bookings/[^/]+/payment", parsed.path):
                 self._simulate_booking_payment(parsed.path.split("/")[-2], data)
+            elif re.fullmatch(r"/api/bookings/[^/]+/access", parsed.path):
+                self._access_booking(parsed.path.split("/")[-2], data)
             elif parsed.path == "/api/chats":
                 self._create_chat(data)
             elif re.fullmatch(r"/api/chats/[^/]+/messages", parsed.path):
@@ -1049,7 +1120,7 @@ class AppHandler(BaseHTTPRequestHandler):
             "phone": professional.get("phone", ""),
             "status": professional.get("status", "active"),
         })
-        service = professional.get("services", [{}])[0]
+        service = (professional.get("services") or [{}])[0]
         result.update({
             "serviceName": service.get("name", ""),
             "price": service.get("price", ""),
@@ -1107,7 +1178,7 @@ class AppHandler(BaseHTTPRequestHandler):
         required = ("name", "service", "city")
         if any(not isinstance(data.get(field), str) or not data[field].strip() for field in required):
             raise ValueError("Informe seu nome, categoria e cidade para criar o perfil.")
-        optional_fields = ("email", "phone", "description", "address", "neighborhood", "serviceName", "price", "duration", "lat", "lon")
+        optional_fields = ("email", "cpf", "phone", "description", "address", "neighborhood", "serviceName", "price", "duration", "lat", "lon")
         if any(field in data and not isinstance(data[field], str) for field in optional_fields):
             raise ValueError("Confira os dados opcionais do perfil.")
         service_key = data["service"].strip().lower()
@@ -1149,8 +1220,10 @@ class AppHandler(BaseHTTPRequestHandler):
         password = data.get("password")
         if not isinstance(email, str) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()):
             raise ValueError("Informe um e-mail válido para acessar sua conta.")
-        if not isinstance(password, str) or not 12 <= len(password) <= 128:
-            raise ValueError("A senha deve ter entre 12 e 128 caracteres.")
+        if not isinstance(password, str) or not 8 <= len(password) <= 128:
+            raise ValueError("A senha deve ter entre 8 e 128 caracteres.")
+        raw_cpf = data.get("cpf", "").strip()
+        cpf = normalize_cpf(raw_cpf) if raw_cpf else None
         professional["status"] = "active"
         session_token = secrets.token_urlsafe(32)
         with DATA_LOCK:
@@ -1158,7 +1231,9 @@ class AppHandler(BaseHTTPRequestHandler):
             email = email.strip().casefold()
             if any(user.get("email", "").casefold() == email for user in stored["users"]):
                 raise ValueError("Já existe uma conta com este e-mail.")
-            user = new_user(email, password, "professional", professional["id"])
+            if cpf and any(verify_private_identifier(cpf, item) for item in stored["users"]):
+                raise ValueError("Já existe uma conta vinculada a este CPF.")
+            user = new_user(email, password, "professional", professional["id"], cpf)
             stored["professionals"].append(professional)
             stored["users"].append(user)
             stored["sessions"].append({
@@ -1268,9 +1343,41 @@ class AppHandler(BaseHTTPRequestHandler):
                 "paymentMode": "demo", "paymentStatus": "demo_pending",
                 "paymentDestination": "clickbeleza", "paymentMethod": None,
             }
+            customer_token = secrets.token_urlsafe(32)
+            booking["customerTokenHash"] = token_hash(customer_token)
             stored["bookings"].append(booking)
             save_data(stored)
-        self._json(201, {"booking": booking})
+        self._json(201, {"booking": public_booking(booking), "customerToken": customer_token})
+
+    def _authorize_booking(self, booking, customer_token):
+        user = self._current_user()
+        if user:
+            if user.get("role") == "admin":
+                return user
+            if user.get("role") == "professional" and user.get("professionalId") == booking.get("professionalId"):
+                return user
+            self._json(403, {"error": "Você não tem acesso a este pedido."})
+            return None
+        stored_hash = booking.get("customerTokenHash", "")
+        if (
+            isinstance(customer_token, str)
+            and customer_token
+            and stored_hash
+            and secrets.compare_digest(stored_hash, token_hash(customer_token))
+        ):
+            return {"role": "customer"}
+        self._json(401, {"error": "Use o código privado deste pedido para continuar."})
+        return None
+
+    def _access_booking(self, booking_id, data):
+        with DATA_LOCK:
+            booking = next((item for item in load_data()["bookings"] if item["id"] == booking_id), None)
+            if not booking:
+                self._json(404, {"error": "Pedido de agendamento não encontrado."})
+                return
+            if not self._authorize_booking(booking, data.get("customerToken")):
+                return
+            self._json(200, {"booking": public_booking(booking)})
 
     def _simulate_booking_payment(self, booking_id, data):
         payment_method = data.get("paymentMethod")
@@ -1282,6 +1389,8 @@ class AppHandler(BaseHTTPRequestHandler):
             if not booking:
                 self._json(404, {"error": "Pedido de agendamento não encontrado."})
                 return
+            if not self._authorize_booking(booking, data.get("customerToken")):
+                return
             if booking.get("status") not in {"solicitado", "confirmado"}:
                 self._json(409, {"error": "Este pedido não aceita mais uma etapa de pagamento."})
                 return
@@ -1292,7 +1401,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 if booking.get("paymentMethod") != payment_method:
                     self._json(409, {"error": "A etapa demonstrativa deste pedido já foi concluída."})
                     return
-                self._json(200, {"booking": booking, "message": "Etapa demonstrativa já concluída; nenhuma cobrança foi feita."})
+                self._json(200, {"booking": public_booking(booking), "message": "Etapa demonstrativa já concluída; nenhuma cobrança foi feita."})
                 return
             if booking.get("paymentStatus") != "demo_pending":
                 self._json(409, {"error": "A etapa demonstrativa deste pedido não está disponível."})
@@ -1301,7 +1410,7 @@ class AppHandler(BaseHTTPRequestHandler):
             booking["paymentMethod"] = payment_method
             save_data(stored)
         self._json(200, {
-            "booking": booking,
+            "booking": public_booking(booking),
             "message": "Pagamento apenas simulado. Nenhuma cobrança, transferência ou repasse foi realizado.",
         })
 
@@ -1317,7 +1426,89 @@ class AppHandler(BaseHTTPRequestHandler):
         bookings = data["bookings"]
         if user["role"] == "professional":
             bookings = [item for item in bookings if item.get("professionalId") == user.get("professionalId")]
-        self._json(200, {"bookings": sorted(bookings, key=lambda item: (item["date"], item["time"]))})
+        self._json(200, {"bookings": [public_booking(item) for item in sorted(bookings, key=lambda item: (item["date"], item["time"]))]})
+
+    def _list_professional_transactions(self):
+        user = self._require_user({"professional"})
+        if not user:
+            return
+        try:
+            data = load_data()
+        except RuntimeError as error:
+            self._json(500, {"error": str(error)})
+            return
+        transactions = [
+            item for item in data["financialTransactions"]
+            if item.get("professionalId") == user.get("professionalId")
+        ]
+        transactions.sort(key=lambda item: (item.get("date", ""), item.get("createdAt", "")), reverse=True)
+        self._json(200, {"transactions": transactions})
+
+    def _create_professional_transaction(self, data):
+        user = self._require_user({"professional"})
+        if not user:
+            return
+        transaction_type = data.get("type")
+        if not isinstance(transaction_type, str) or transaction_type not in {"entrada", "saida"}:
+            raise ValueError("Escolha entrada ou saída.")
+        raw_amount = data.get("amount")
+        if isinstance(raw_amount, bool) or not isinstance(raw_amount, (str, int, float)):
+            raise ValueError("Informe um valor válido.")
+        try:
+            amount = float(raw_amount)
+        except (TypeError, ValueError):
+            raise ValueError("Informe um valor válido.") from None
+        if not math.isfinite(amount) or not 0 < amount <= 1_000_000:
+            raise ValueError("O valor deve ser maior que zero e não pode ultrapassar R$ 1.000.000.")
+        amount = round(amount, 2)
+        if amount <= 0:
+            raise ValueError("O valor deve ser maior que zero.")
+        description = data.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError("Descreva o lançamento.")
+        description = description.strip()
+        if len(description) > 160:
+            raise ValueError("A descrição deve ter até 160 caracteres.")
+        transaction_date = data.get("date", date.today().isoformat())
+        if not isinstance(transaction_date, str):
+            raise ValueError("Informe uma data válida.")
+        try:
+            parsed_date = date.fromisoformat(transaction_date)
+        except ValueError:
+            raise ValueError("Informe uma data válida.") from None
+        if parsed_date.isoformat() != transaction_date:
+            raise ValueError("Informe uma data válida.")
+
+        with DATA_LOCK:
+            try:
+                stored = load_data()
+            except RuntimeError as error:
+                self._json(500, {"error": str(error)})
+                return
+            transactions = stored["financialTransactions"]
+            own_count = sum(
+                item.get("professionalId") == user.get("professionalId")
+                for item in transactions
+            )
+            if own_count >= 1000:
+                raise ValueError("O limite de 1.000 lançamentos foi atingido.")
+            transaction = {
+                "id": uuid.uuid4().hex[:12],
+                "professionalId": user["professionalId"],
+                "type": transaction_type,
+                "amount": amount,
+                "description": description,
+                "date": transaction_date,
+                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "recordedManually": True,
+            }
+            transactions.append(transaction)
+            try:
+                save_data(stored)
+            except RuntimeError as error:
+                self._json(500, {"error": str(error)})
+                return
+        self._json(201, {"transaction": transaction})
 
     def _admin_overview(self):
         if not self._require_user({"admin"}):
@@ -1337,12 +1528,41 @@ class AppHandler(BaseHTTPRequestHandler):
             {key: value for key, value in item.items() if key != "tokenHash"}
             for item in get_partners(data)
         ]
+        clients_by_key = {}
+        clients_by_name = {}
+        for booking in data["bookings"]:
+            client_key = customer_key(booking.get("customerEmail"), booking.get("customerPhone"), booking.get("customerName"))
+            if isinstance(booking.get("customerName"), str) and booking["customerName"].strip():
+                clients_by_name.setdefault(booking["customerName"].strip().casefold(), client_key)
+            client = clients_by_key.setdefault(client_key, {
+                "name": booking.get("customerName", ""),
+                "email": booking.get("customerEmail", ""),
+                "phone": booking.get("customerPhone", ""),
+                "bookings": 0,
+                "conversations": 0,
+            })
+            client["bookings"] += 1
+        for chat in data["chats"]:
+            client_name = chat.get("customerName", "")
+            client_key = clients_by_name.get(
+                client_name.strip().casefold() if isinstance(client_name, str) else "",
+                customer_key("", "", client_name),
+            )
+            client = clients_by_key.setdefault(client_key, {
+                "name": chat.get("customerName", ""),
+                "email": "",
+                "phone": "",
+                "bookings": 0,
+                "conversations": 0,
+            })
+            client["conversations"] += 1
         self._json(200, {
             "professionals": professionals,
-            "bookings": sorted(data["bookings"], key=lambda item: (item["date"], item["time"])),
+            "bookings": [public_booking(item) for item in sorted(data["bookings"], key=lambda item: (item["date"], item["time"]))],
             "chats": [self._public_chat(item) for item in sorted(data["chats"], key=lambda chat: chat["updatedAt"], reverse=True)],
             "partners": partners,
             "users": [public_user(item) for item in data["users"]],
+            "clients": sorted(clients_by_key.values(), key=lambda item: item["name"].casefold()),
         })
 
     def _admin_update_status(self, kind, record_id, data):
@@ -1385,9 +1605,6 @@ class AppHandler(BaseHTTPRequestHandler):
         self._json(200, response)
 
     def _update_booking_status(self, booking_id, data):
-        user = self._require_user({"admin", "professional"})
-        if not user:
-            return
         status = data.get("status")
         if status not in VALID_STATUSES:
             raise ValueError("Status de agendamento inválido.")
@@ -1397,15 +1614,18 @@ class AppHandler(BaseHTTPRequestHandler):
             if not booking:
                 self._json(404, {"error": "Agendamento não encontrado."})
                 return
-            if user["role"] == "professional" and booking.get("professionalId") != user.get("professionalId"):
-                self._json(403, {"error": "Você só pode atualizar pedidos do seu perfil."})
+            user = self._authorize_booking(booking, data.get("customerToken"))
+            if not user:
+                return
+            if user["role"] == "customer" and status != "cancelado":
+                self._json(403, {"error": "Clientes só podem cancelar o próprio pedido."})
                 return
             allowed = {"solicitado": {"confirmado", "cancelado"}, "confirmado": {"concluido", "cancelado"}}
             if status not in allowed.get(booking["status"], set()):
                 raise ValueError("Esta mudança de status não é permitida.")
             booking["status"] = status
             save_data(stored)
-        self._json(200, {"booking": booking})
+        self._json(200, {"booking": public_booking(booking)})
 
     def _create_review(self, booking_id, data):
         rating = data.get("rating")
@@ -1419,6 +1639,12 @@ class AppHandler(BaseHTTPRequestHandler):
             booking = next((item for item in stored["bookings"] if item["id"] == booking_id), None)
             if not booking:
                 self._json(404, {"error": "Agendamento não encontrado."})
+                return
+            user = self._authorize_booking(booking, data.get("customerToken"))
+            if not user:
+                return
+            if user["role"] == "professional":
+                self._json(403, {"error": "Somente o cliente atendido pode avaliar este pedido."})
                 return
             if booking["status"] != "concluido" or booking.get("review"):
                 raise ValueError("Só é possível avaliar um atendimento concluído uma única vez.")
@@ -1619,7 +1845,7 @@ class AppHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
     print(f"Click Beleza local: http://{HOST}:{PORT}")
-    print("Protótipo sem autenticação: não exponha na internet nem use dados pessoais reais.")
+    print("Protótipo com acesso por função; não exponha na internet nem use dados pessoais reais.")
     print("Pressione Ctrl+C para encerrar.")
     try:
         server.serve_forever()

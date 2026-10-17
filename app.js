@@ -17,6 +17,23 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
 })[char]);
 
+function initPasswordVisibility() {
+  document.querySelectorAll("[data-password-toggle]").forEach(input => {
+    const button = input.parentElement.querySelector(".password-toggle");
+    if (!button) return;
+    button.addEventListener("click", () => {
+      const showPassword = input.type === "password";
+      input.type = showPassword ? "text" : "password";
+      button.setAttribute("aria-pressed", String(showPassword));
+      button.setAttribute("aria-label", showPassword ? "Ocultar senha" : "Mostrar senha");
+      button.title = showPassword ? "Ocultar senha" : "Mostrar senha";
+      button.innerHTML = showPassword
+        ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-4 4.8M6.2 6.2C3.5 8 2 12 2 12s3.5 7 10 7c1.3 0 2.4-.2 3.5-.7"/></svg>'
+        : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
+    });
+  });
+}
+
 function setLocationFromCoordinates(position, input, form) {
   input.value = `${position.coords.latitude.toFixed(6)},${position.coords.longitude.toFixed(6)}`;
   form.requestSubmit();
@@ -71,6 +88,7 @@ function bookingPaymentCheckout(booking) {
       <p class="order-total">Total demonstrativo <strong>${money(booking.price)}</strong></p>
       <small>Código do pedido: ${escapeHtml(booking.id)}</small>
     </div>
+    <div class="customer-access-code"><span>CÓDIGO PRIVADO DO PEDIDO</span><code>${escapeHtml(booking.customerToken)}</code><small>Guarde este código para consultar, cancelar ou avaliar somente este pedido.</small><a href="/customer-orders.html">Acompanhar meu pedido</a></div>
     <fieldset class="payment-choice"><legend>Escolha uma forma de pagamento</legend>
       <p class="payment-disclaimer">O recebedor previsto seria Click Beleza, mas este checkout é apenas demonstrativo: nenhuma cobrança, transferência ou repasse será realizado. Não informe dados de cartão.</p>
       <div class="payment-methods">
@@ -286,8 +304,12 @@ function initRegister() {
   if (professionalId) {
     const passwordLabel = document.getElementById("account-password-label");
     passwordLabel.hidden = true;
+    document.getElementById("account-cpf-label").hidden = true;
     form.elements.password.required = false;
     form.querySelector(".profile-extra").open = true;
+    if (location.hash === "#portfolio-section") {
+      form.querySelector(".profile-extra").open = true;
+    }
     document.querySelector(".form-shell h1").textContent = "Atualize seu perfil.";
     document.querySelector(".form-shell>p:not(.eyebrow)").textContent = "Atualize seu perfil quando quiser. Quanto mais informações adicionar, mais os clientes conhecerão seu trabalho.";
     submitButton.innerHTML = 'Salvar alterações <span aria-hidden="true">→</span>';
@@ -409,14 +431,16 @@ async function initProfessional() {
             }
             feedback.textContent = "Registrando a etapa demonstrativa…";
             const result = await chamarAPI(`agendamentos/${encodeURIComponent(currentBooking.id)}/pagamento`, {
-              method: "POST", body: JSON.stringify({ paymentMethod })
+              method: "POST", body: JSON.stringify({ paymentMethod, customerToken: currentBooking.customerToken })
             });
-            currentBooking = result.booking;
+            currentBooking = { ...result.booking, customerToken: currentBooking.customerToken };
             form.innerHTML = `<div class="checkout-progress" aria-label="Etapas do pedido"><span class="checkout-step complete">1 · Pedido enviado</span><span class="checkout-step complete">2 · Demonstração concluída</span></div>
               <div class="payment-success"><p class="eyebrow">ETAPA CONCLUÍDA</p><h3 class="checkout-title" id="checkout-heading" tabindex="-1">Pedido registrado</h3>
                 <p>O pagamento por ${escapeHtml(paymentMethod === "pix" ? "Pix" : "cartão")} foi apenas simulado. <strong>Nenhuma cobrança ou transferência foi realizada.</strong></p>
                 <p>O pedido <strong>${escapeHtml(currentBooking.id)}</strong> continua aguardando a confirmação do profissional.</p>
                 <p>Total do pedido: <strong>${money(currentBooking.price)}</strong></p>
+                <p class="customer-access-code"><span>CÓDIGO PRIVADO DO PEDIDO</span><code>${escapeHtml(currentBooking.customerToken)}</code><small>Guarde este código para consultar ou cancelar seu pedido.</small></p>
+                <a class="button button-outline button-wide" href="/customer-orders.html">Acompanhar meu pedido</a>
               </div>
               <button class="button button-outline button-wide" type="button" data-cancel-order>Cancelar pedido</button>
               <p class="form-feedback" id="booking-feedback" aria-live="polite"></p>`;
@@ -435,7 +459,7 @@ async function initProfessional() {
           data.serviceName = service.name;
           data.price = service.price;
           const result = await chamarAPI("agendamentos", { method: "POST", body: JSON.stringify(data) });
-          currentBooking = result.booking;
+          currentBooking = { ...result.booking, customerToken: result.customerToken };
           form.innerHTML = bookingPaymentCheckout(currentBooking);
           form.querySelector("#checkout-heading")?.focus();
         } catch (error) {
@@ -452,7 +476,7 @@ async function initProfessional() {
         const feedback = document.getElementById("booking-feedback");
         try {
           const result = await chamarAPI(`agendamentos/${encodeURIComponent(currentBooking.id)}/status`, {
-            method: "PATCH", body: JSON.stringify({ status: "cancelado" })
+            method: "PATCH", body: JSON.stringify({ status: "cancelado", customerToken: currentBooking.customerToken })
           });
           currentBooking = result.booking;
           bookingForm.innerHTML = `<div class="payment-success"><h3 class="checkout-title" id="checkout-heading" tabindex="-1">Pedido cancelado</h3><p>Nenhum valor foi cobrado. ${bookingPaymentSummary(currentBooking)}</p><p>Código do pedido: <strong>${escapeHtml(currentBooking.id)}</strong></p></div>`;
@@ -726,7 +750,7 @@ async function initAgenda() {
     container.innerHTML = '<p class="loading">Carregando pedidos…</p>';
     try {
       const { bookings } = await chamarAPI("agendamentos");
-      container.innerHTML = bookings.length ? bookings.map(booking => `<article class="booking-row"><div><span class="status-pill status-${escapeHtml(booking.status)}">${escapeHtml(booking.status)}</span><h3>${escapeHtml(booking.customerName)} · ${escapeHtml(booking.serviceName)}</h3><p>${escapeHtml(booking.professionalName)} · ${escapeHtml(booking.date)} às ${escapeHtml(booking.time)} · ${money(booking.price)}</p><small>${booking.customerEmail ? escapeHtml(booking.customerEmail) + " · " : ""}${escapeHtml(booking.customerPhone)}</small>${bookingPaymentSummary(booking) ? `<small class="booking-payment">${escapeHtml(bookingPaymentSummary(booking))}</small>` : ""}</div><div class="booking-actions">${booking.status === "solicitado" ? `<button class="button button-small" data-status="confirmado" data-id="${escapeHtml(booking.id)}">Confirmar</button>` : ""}${booking.status === "confirmado" ? `<button class="button button-small" data-status="concluido" data-id="${escapeHtml(booking.id)}">Concluir</button>` : ""}${["solicitado", "confirmado"].includes(booking.status) ? `<button class="button button-outline button-small" data-status="cancelado" data-id="${escapeHtml(booking.id)}">Cancelar</button>` : ""}${booking.status === "concluido" && !booking.review ? `<button class="button button-small" data-review="${escapeHtml(booking.id)}">Avaliar</button>` : ""}</div></article>`).join("") : '<div class="empty-state"><h3>Nenhum pedido ainda</h3><p>Quando alguém solicitar um horário, ele aparecerá aqui.</p></div>';
+      container.innerHTML = bookings.length ? bookings.map(booking => `<article class="booking-row"><div><span class="status-pill status-${escapeHtml(booking.status)}">${escapeHtml(booking.status)}</span><h3>${escapeHtml(booking.customerName)} · ${escapeHtml(booking.serviceName)}</h3><p>${escapeHtml(booking.professionalName)} · ${escapeHtml(booking.date)} às ${escapeHtml(booking.time)} · ${money(booking.price)}</p><small>${booking.customerEmail ? escapeHtml(booking.customerEmail) + " · " : ""}${escapeHtml(booking.customerPhone)}</small>${bookingPaymentSummary(booking) ? `<small class="booking-payment">${escapeHtml(bookingPaymentSummary(booking))}</small>` : ""}</div><div class="booking-actions">${booking.status === "solicitado" ? `<button class="button button-small" data-status="confirmado" data-id="${escapeHtml(booking.id)}">Confirmar</button>` : ""}${booking.status === "confirmado" ? `<button class="button button-small" data-status="concluido" data-id="${escapeHtml(booking.id)}">Concluir</button>` : ""}${["solicitado", "confirmado"].includes(booking.status) ? `<button class="button button-outline button-small" data-status="cancelado" data-id="${escapeHtml(booking.id)}">Cancelar</button>` : ""}</div></article>`).join("") : '<div class="empty-state"><h3>Nenhum pedido ainda</h3><p>Quando alguém solicitar um horário, ele aparecerá aqui.</p></div>';
     } catch (error) { container.innerHTML = `<p class="error-message">${escapeHtml(error.message)}</p>`; }
   }
   container.addEventListener("click", async event => {
@@ -735,13 +759,6 @@ async function initAgenda() {
     try {
       if (button.dataset.status) {
         await chamarAPI(`agendamentos/${encodeURIComponent(button.dataset.id)}/status`, { method: "PATCH", body: JSON.stringify({ status: button.dataset.status }) });
-      } else if (button.dataset.review) {
-        const ratingValue = prompt("Sua nota de 1 a 5:");
-        if (ratingValue === null) return;
-        const rating = Number(ratingValue);
-        if (!Number.isInteger(rating) || rating < 1 || rating > 5) { alert("Informe uma nota inteira entre 1 e 5."); return; }
-        const comment = prompt("Conte um pouco sobre o atendimento:") || "";
-        await chamarAPI(`agendamentos/${encodeURIComponent(button.dataset.review)}/review`, { method: "POST", body: JSON.stringify({ rating, comment }) });
       }
       await load();
     } catch (error) { alert(error.message); }
@@ -799,12 +816,26 @@ function initAuthNav() {
     link.textContent = user?.role === "admin" ? "Admin"
       : user?.role === "professional" ? "Meu perfil" : "Entrar";
     nav.append(link);
-    if (!user) return;
+    if (!user) {
+      const customerOrders = document.createElement("a");
+      customerOrders.href = "/customer-orders.html";
+      customerOrders.textContent = "Meus pedidos";
+      nav.append(customerOrders);
+      return;
+    }
     if (user.role === "professional") {
+      const editProfile = document.createElement("a");
+      editProfile.href = `/register.html?id=${encodeURIComponent(user.professionalId)}#portfolio-section`;
+      editProfile.textContent = "Perfil e portfólio";
+      nav.append(editProfile);
       const agenda = document.createElement("a");
       agenda.href = "/agenda.html";
       agenda.textContent = "Pedidos e conversas";
       nav.append(agenda);
+      const finance = document.createElement("a");
+      finance.href = "/professional-dashboard.html#professional-finance";
+      finance.textContent = "Financeiro";
+      nav.append(finance);
     }
     const logout = document.createElement("button");
     logout.type = "button";
@@ -822,6 +853,7 @@ function initAuthNav() {
   });
 }
 
+initPasswordVisibility();
 initHome();
 initProfessionals();
 initRegister();

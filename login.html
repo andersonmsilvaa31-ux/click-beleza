@@ -6,11 +6,12 @@
   <main class="form-shell auth-shell">
     <p class="eyebrow">ACESSO À PLATAFORMA</p>
     <h1>Entre na sua <span>conta.</span></h1>
-    <p>Use seu e-mail e senha profissional ou administrativa.</p>
+    <p>Entre com o CPF vinculado à conta ou com seu e-mail e senha.</p>
     <form class="form-card" id="login-form">
       <div class="form-grid">
-        <label class="full">E-mail<input name="email" type="email" required maxlength="200" autocomplete="username"></label>
-        <label class="full">Senha<input name="password" type="password" required maxlength="128" autocomplete="current-password"></label>
+        <label class="full">CPF ou e-mail<input name="identifier" type="text" required maxlength="200" autocomplete="username" placeholder="Digite seu CPF ou e-mail"></label>
+        <label class="full">Senha<span class="password-field"><input name="password" type="password" required maxlength="128" autocomplete="current-password" data-password-toggle><button class="password-toggle" type="button" aria-label="Mostrar senha" aria-pressed="false" title="Mostrar senha"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>
+        <label class="remember-identifier full"><input name="rememberIdentifier" type="checkbox"> Lembrar meu CPF/e-mail neste dispositivo (não salva a senha)</label>
         <button class="button button-primary full" type="submit">Entrar <span aria-hidden="true">→</span></button>
       </div>
       <p id="login-feedback" class="form-feedback" aria-live="polite"></p>

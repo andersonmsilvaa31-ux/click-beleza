@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Meus pedidos | Click Beleza</title><link rel="stylesheet" href="style.css"><script src="api.js" defer></script><script src="app.js" defer></script><script src="account.js" defer></script></head>
+<body>
+  <header class="site-header"><a class="brand" href="/">click<span>beleza</span><i>.</i></a><nav><a href="/services.html">Serviços</a><a href="/professionals.html">Encontrar profissionais</a></nav></header>
+  <main class="form-shell customer-orders-shell">
+    <p class="eyebrow">ÁREA DO CLIENTE · ACESSO AO SEU PEDIDO</p>
+    <h1>Acompanhe seu <span>pedido.</span></h1>
+    <p>Informe o código do pedido e o código privado recebido ao solicitar o horário. Esse acesso mostra somente o seu pedido.</p>
+    <form class="form-card" id="customer-order-form">
+      <div class="form-grid">
+        <label class="full">Código do pedido<input name="bookingId" required maxlength="20" autocomplete="off" placeholder="Ex.: A1B2C3D4"></label>
+        <label class="full">Código privado de acesso<input name="customerToken" type="password" required maxlength="128" autocomplete="off"></label>
+        <button class="button button-primary full" type="submit">Consultar meu pedido</button>
+      </div>
+      <p id="customer-order-feedback" class="form-feedback" aria-live="polite"></p>
+    </form>
+    <section class="account-card customer-order-result" id="customer-order-result" aria-live="polite" hidden></section>
+    <p class="form-note">O Click Beleza não processa pagamentos reais. A etapa de pagamento é apenas uma demonstração, sem cobrança ou transferência.</p>
+  </main>
+  <footer class="site-footer"><div class="footer-inner"><div class="footer-brand"><a class="brand" href="/">click<span>beleza</span><i>.</i></a><p class="footer-text">Seu pedido fica acessível somente com o respectivo código privado.</p></div></div><div class="footer-bottom"><span>© 2026 Click Beleza · Marília, SP</span></div></footer>
+</body>
+</html>

@@ -45,11 +45,23 @@ profissionais reais. O protótipo tem contas de profissionais e administrador, c
 como hash e sessões em cookie HttpOnly. O painel administrativo fica em
 `/admin.html`; a área profissional fica em `/professional-dashboard.html`.
 Cadastros de profissionais criam uma conta e uma sessão automaticamente.
+O login aceita e-mail ou CPF validado quando este foi informado no cadastro.
+O e-mail continua obrigatório para novas contas profissionais; o CPF é
+opcional e armazenado somente como hash salgado. O formulário pode lembrar
+apenas o CPF/e-mail neste dispositivo, nunca a senha. Senhas novas exigem pelo
+menos 8 caracteres e são armazenadas com hash.
+Para vincular um CPF opcional à primeira conta administrativa, configure
+`CLICK_BELEZA_ADMIN_CPF` ao executar a tarefa de criação do administrador.
 Para criar a primeira conta administrativa no VS Code, execute
 **Click Beleza: criar primeiro administrador** em **Terminal → Run Task**. A
 senha aleatória é exibida uma única vez no terminal; guarde-a em local seguro.
 O login inicial é `admin@clickbeleza.local`, configurável pela tarefa.
-Contas profissionais visualizam apenas os próprios agendamentos e conversas.
+Administradores podem visualizar e gerenciar todos os perfis, contas,
+agendamentos, clientes, conversas e anúncios. Cada profissional acessa somente
+o próprio perfil e os pedidos e conversas ligados a ele. Clientes usam as
+funções públicas básicas; cada pedido recebe um código aleatório privado para
+autorizar somente o pagamento demonstrativo, cancelamento e avaliação daquele
+pedido. O banco guarda somente o hash do código, nunca o código em si.
 Apesar da autenticação, este MVP ainda não tem controles suficientes para uso
 público em produção. Não há
 processamento de pagamentos. Após enviar um pedido, o cliente pode avançar por
@@ -57,6 +69,9 @@ uma etapa demonstrativa de Pix ou cartão; nenhuma cobrança, transferência,
 repasse ou coleta de dados financeiros ocorre. O pedido continua aguardando a
 confirmação do profissional. Uma cobrança real exigirá integração com um
 provedor de pagamentos e controles de segurança apropriados.
+O painel profissional também oferece um livro-caixa manual de entradas e
+despesas, isolado por profissional. Esses lançamentos são anotações e não
+confirmam recebimentos, pagamentos, cobranças ou transferências reais.
 Não o exponha à
 internet nem cadastre dados pessoais reais. A consulta de CEP requer internet;
 distância exata depende da localização GPS autorizada ou de coordenadas válidas
@@ -95,6 +110,10 @@ gestão; profissionais autenticados recebem somente os próprios pedidos e
 conversas. A sessão expira após oito horas. Em uma hospedagem pública, use
 HTTPS e revise controles de segurança, privacidade e recuperação de acesso
 antes de liberar as contas.
+Clientes acompanham um pedido individual em `/customer-orders.html` usando o
+código do pedido e o código privado exibido no checkout; esse código permite
+consultar e cancelar apenas aquele pedido e registrar uma avaliação depois do
+atendimento.
 
 **Consulta de CEP** (`/api/cep?cep=00000-000`): consulta o ViaCEP e, se ele
 falhar, o BrasilAPI; depois tenta obter coordenadas pelo Nominatim

@@ -19,8 +19,15 @@ def main():
         raise RuntimeError("Já existe uma conta de administrador. Nenhuma senha foi alterada.")
     if any(user.get("email", "").casefold() == email for user in data["users"]):
         raise RuntimeError("Este login já está associado a outra conta.")
+    raw_cpf = os.environ.get("CLICK_BELEZA_ADMIN_CPF", "").strip()
+    try:
+        cpf = consulta_cep.normalize_cpf(raw_cpf) if raw_cpf else None
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+    if cpf and any(consulta_cep.verify_private_identifier(cpf, user) for user in data["users"]):
+        raise RuntimeError("Este CPF já está associado a outra conta.")
     password = secrets.token_urlsafe(24)
-    data["users"].append(consulta_cep.new_user(email, password, "admin"))
+    data["users"].append(consulta_cep.new_user(email, password, "admin", cpf=cpf))
     consulta_cep.save_data(data)
     print(f"Login do administrador: {email}")
     print(f"Senha inicial (mostrada uma vez): {password}")
